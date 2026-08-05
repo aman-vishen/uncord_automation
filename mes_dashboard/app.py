@@ -41,6 +41,7 @@ EVENT_COLUMNS = [
     "mac", "serial_number", "scanned_serial_number", "gpon_number", "part_number",
     "status", "writer_state", "server_check", "serial_scan_result",
     "wifi_calibration_result", "bob_calibration_result", "firmware_result",
+    "stage_name", "source_file", "source_offset", "raw_log",
     "firmware_version", "led_result", "reset_result", "wps_result", "user_mode_result",
     "detail", "completed_at", "payload_json",
 ]
@@ -115,9 +116,14 @@ class CloudDatabase:
                     status TEXT NOT NULL, writer_state TEXT, server_check TEXT, serial_scan_result TEXT,
                     wifi_calibration_result TEXT, bob_calibration_result TEXT, firmware_result TEXT,
                     firmware_version TEXT, led_result TEXT, reset_result TEXT, wps_result TEXT,
-                    user_mode_result TEXT, detail TEXT, completed_at TIMESTAMPTZ NOT NULL,
+                    user_mode_result TEXT, detail TEXT, stage_name TEXT, source_file TEXT,
+                    source_offset BIGINT, raw_log TEXT, completed_at TIMESTAMPTZ NOT NULL,
                     received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), payload_json JSONB NOT NULL
                 )""",
+                "ALTER TABLE production_events ADD COLUMN IF NOT EXISTS stage_name TEXT",
+                "ALTER TABLE production_events ADD COLUMN IF NOT EXISTS source_file TEXT",
+                "ALTER TABLE production_events ADD COLUMN IF NOT EXISTS source_offset BIGINT",
+                "ALTER TABLE production_events ADD COLUMN IF NOT EXISTS raw_log TEXT",
                 "CREATE INDEX IF NOT EXISTS idx_events_completed ON production_events(completed_at DESC)",
                 "CREATE INDEX IF NOT EXISTS idx_events_type_completed ON production_events(event_type, completed_at DESC)",
                 "CREATE INDEX IF NOT EXISTS idx_events_plant_completed ON production_events(plant_id, completed_at DESC)",
@@ -138,7 +144,8 @@ class CloudDatabase:
                     status TEXT NOT NULL, writer_state TEXT, server_check TEXT, serial_scan_result TEXT,
                     wifi_calibration_result TEXT, bob_calibration_result TEXT, firmware_result TEXT,
                     firmware_version TEXT, led_result TEXT, reset_result TEXT, wps_result TEXT,
-                    user_mode_result TEXT, detail TEXT, completed_at TEXT NOT NULL,
+                    user_mode_result TEXT, detail TEXT, stage_name TEXT, source_file TEXT,
+                    source_offset INTEGER, raw_log TEXT, completed_at TEXT NOT NULL,
                     received_at TEXT NOT NULL, payload_json TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_completed ON production_events(completed_at DESC);
@@ -149,6 +156,13 @@ class CloudDatabase:
             """
             with self.connect() as con:
                 con.executescript(schema)
+                existing = {row[1] for row in con.execute("PRAGMA table_info(production_events)")}
+                for column, declaration in {
+                    "stage_name": "TEXT", "source_file": "TEXT",
+                    "source_offset": "INTEGER", "raw_log": "TEXT",
+                }.items():
+                    if column not in existing:
+                        con.execute(f"ALTER TABLE production_events ADD COLUMN {column} {declaration}")
                 con.commit()
 
     def insert_events(self, events: Iterable[dict[str, Any]]) -> tuple[list[str], list[str], list[dict[str, str]]]:
@@ -227,7 +241,7 @@ def validate_event(raw: Any, postgres: bool) -> dict[str, Any]:
     status = normalize_text(raw.get("status"), 30).upper()
     if not event_id:
         raise ValueError("event_id is required")
-    if event_type not in {"IDENTITY_WRITER_RESULT", "QUALITY_VERIFICATION_RESULT", "MAC_POOL_SNAPSHOT"}:
+    if event_type not in {"IDENTITY_WRITER_RESULT", "QUALITY_VERIFICATION_RESULT", "STAGE_LOG_RESULT", "MAC_POOL_SNAPSHOT"}:
         raise ValueError("Unsupported event_type")
     if not plant_id:
         raise ValueError("plant_id is required")
@@ -235,6 +249,10 @@ def validate_event(raw: Any, postgres: bool) -> dict[str, Any]:
         raise ValueError("station_id is required")
     if event_type != "MAC_POOL_SNAPSHOT" and status not in {"PASS", "FAIL", "ERROR"}:
         raise ValueError("status must be PASS, FAIL, or ERROR")
+    stage_name = normalize_text(raw.get("stage_name"), 100).upper()
+    allowed_stages = {"WIFI_CALIBRATION", "LABEL_PRINTING", "BOB_CALIBRATION", "WIFI_COUPLING_VOIP"}
+    if event_type == "STAGE_LOG_RESULT" and stage_name not in allowed_stages:
+        raise ValueError("Unsupported or missing stage_name")
     if event_type == "MAC_POOL_SNAPSHOT":
         status = "INFO"
     completed_at = parse_datetime(raw.get("completed_at"))
@@ -255,6 +273,10 @@ def validate_event(raw: Any, postgres: bool) -> dict[str, Any]:
         "led_result": normalize_text(raw.get("led_result"), 50).upper(), "reset_result": normalize_text(raw.get("reset_result"), 50).upper(),
         "wps_result": normalize_text(raw.get("wps_result"), 50).upper(), "user_mode_result": normalize_text(raw.get("user_mode_result"), 50).upper(),
         "detail": normalize_text(raw.get("detail"), 8000),
+        "stage_name": stage_name,
+        "source_file": normalize_text(raw.get("source_file"), 1000),
+        "source_offset": int(raw.get("source_offset", 0) or 0),
+        "raw_log": normalize_text(raw.get("raw_log"), 16000),
         "completed_at": completed_at if postgres else completed_at.isoformat(),
         "payload_json": json.dumps(payload, ensure_ascii=False), "payload_object": payload,
     }
@@ -284,11 +306,31 @@ def dashboard_data(start: date, end: date) -> dict[str, Any]:
     events = db.events_between(start, end)
     writer = [e for e in events if e["event_type"] == "IDENTITY_WRITER_RESULT"]
     verifier = [e for e in events if e["event_type"] == "QUALITY_VERIFICATION_RESULT"]
-    writer_pass = sum(e["status"] == "PASS" for e in writer)
-    writer_fail = sum(e["status"] in {"FAIL", "ERROR"} for e in writer)
-    final_pass = sum(e["status"] == "PASS" for e in verifier)
-    final_fail = sum(e["status"] in {"FAIL", "ERROR"} for e in verifier)
-    final_total = final_pass + final_fail
+    stage_logs = [e for e in events if e["event_type"] == "STAGE_LOG_RESULT"]
+
+    def result_counts(rows: list[dict[str, Any]]) -> tuple[int, int, int]:
+        passed = sum(e["status"] == "PASS" for e in rows)
+        failed = sum(e["status"] in {"FAIL", "ERROR"} for e in rows)
+        return passed, failed, passed + failed
+
+    writer_pass, writer_fail, writer_total = result_counts(writer)
+    final_pass, final_fail, final_total = result_counts(verifier)
+
+    stage_groups: list[tuple[str, list[dict[str, Any]]]] = [
+        ("1. MAC Write", writer),
+        ("2. Wi-Fi Calibration", [e for e in stage_logs if e.get("stage_name") == "WIFI_CALIBRATION"]),
+        ("3. Label Printing", [e for e in stage_logs if e.get("stage_name") == "LABEL_PRINTING"]),
+        ("4. BOB Calibration", [e for e in stage_logs if e.get("stage_name") == "BOB_CALIBRATION"]),
+        ("5. Wi-Fi Coupling & VoIP", [e for e in stage_logs if e.get("stage_name") == "WIFI_COUPLING_VOIP"]),
+        ("6. Verification", verifier),
+    ]
+    stages = []
+    for label, rows in stage_groups:
+        passed, failed, tested = result_counts(rows)
+        stages.append({
+            "stage": label, "pass": passed, "fail": failed, "tested": tested,
+            "yield": safe_rate(passed, tested),
+        })
 
     daily_map: dict[str, Counter] = defaultdict(Counter)
     for event in verifier:
@@ -297,21 +339,8 @@ def dashboard_data(start: date, end: date) -> dict[str, Any]:
         daily_map[day]["pass" if event["status"] == "PASS" else "fail"] += 1
     daily = [{"day": day, "pass": c["pass"], "fail": c["fail"], "total": c["total"]} for day, c in sorted(daily_map.items())]
 
-    stage_defs = [
-        ("Server MAC", "server_check"), ("Serial Scan", "serial_scan_result"),
-        ("Wi-Fi Calibration", "wifi_calibration_result"), ("BOB Calibration", "bob_calibration_result"),
-        ("Firmware", "firmware_result"), ("LED", "led_result"), ("Reset", "reset_result"),
-        ("WPS", "wps_result"), ("User Mode", "user_mode_result"),
-    ]
-    stages = []
-    for label, column in stage_defs:
-        values = [normalize_text(e.get(column), 100).upper() for e in verifier]
-        values = [v for v in values if v and v not in {"SKIP", "PENDING", "NOT_RUN", "N/A"}]
-        passed = sum(v == "PASS" for v in values)
-        stages.append({"stage": label, "pass": passed, "fail": len(values) - passed, "tested": len(values), "yield": safe_rate(passed, len(values))})
-
     station_map: dict[str, dict[str, Any]] = {}
-    for event in verifier:
+    for event in [e for e in events if e["event_type"] != "MAC_POOL_SNAPSHOT"]:
         station = event["station_id"] or "UNKNOWN"
         item = station_map.setdefault(station, {"client_id": station, "total": 0, "pass": 0, "fail": 0, "last_result": ""})
         item["total"] += 1
@@ -321,12 +350,25 @@ def dashboard_data(start: date, end: date) -> dict[str, Any]:
     for item in stations:
         item["yield"] = safe_rate(item["pass"], item["total"])
 
-    recent_rows = sorted(verifier, key=lambda e: as_iso(e["completed_at"]), reverse=True)[:100]
+    def display_stage(e: dict[str, Any]) -> str:
+        if e["event_type"] == "IDENTITY_WRITER_RESULT": return "MAC Write"
+        if e["event_type"] == "QUALITY_VERIFICATION_RESULT": return "Verification"
+        return {
+            "WIFI_CALIBRATION": "Wi-Fi Calibration",
+            "LABEL_PRINTING": "Label Printing",
+            "BOB_CALIBRATION": "BOB Calibration",
+            "WIFI_COUPLING_VOIP": "Wi-Fi Coupling & VoIP",
+        }.get(e.get("stage_name") or "", e.get("stage_name") or "Production Stage")
+
+    production_events = [e for e in events if e["event_type"] != "MAC_POOL_SNAPSHOT"]
+    recent_rows = sorted(production_events, key=lambda e: as_iso(e["completed_at"]), reverse=True)[:200]
     recent = [{
-        "completed_at": as_iso(e["completed_at"]), "mac": e["mac"] or "", "serial_number": e["serial_number"] or "",
-        "gpon_number": e["gpon_number"] or "", "part_number": e["part_number"] or "", "client_id": e["station_id"] or "",
-        "router_ip": e["router_ip"] or "", "status": e["status"], "wifi_calibration_result": e["wifi_calibration_result"] or "",
-        "bob_calibration_result": e["bob_calibration_result"] or "", "firmware_version": e["firmware_version"] or "", "detail": e["detail"] or "",
+        "completed_at": as_iso(e["completed_at"]), "stage": display_stage(e),
+        "mac": e["mac"] or "", "serial_number": e["serial_number"] or "",
+        "gpon_number": e["gpon_number"] or "", "part_number": e["part_number"] or "",
+        "client_id": e["station_id"] or "", "router_ip": e["router_ip"] or "",
+        "source_file": e.get("source_file") or "", "status": e["status"],
+        "detail": e["detail"] or "", "event_type": e["event_type"],
     } for e in recent_rows]
 
     snapshot = db.latest_snapshot()
@@ -334,11 +376,16 @@ def dashboard_data(start: date, end: date) -> dict[str, Any]:
     return {
         "range": {"start": start.isoformat(), "end": end.isoformat()},
         "kpi": {
-            "production_volume": final_total, "final_pass": final_pass, "final_fail": final_fail,
-            "final_yield": safe_rate(final_pass, final_total), "writer_pass": writer_pass, "writer_fail": writer_fail,
-            "available_macs": int(metrics.get("available", 0) or 0), "reserved_macs": int(metrics.get("reserved", 0) or 0),
+            "production_volume": final_total, "line_input": writer_total,
+            "final_pass": final_pass, "final_fail": final_fail,
+            "final_yield": safe_rate(final_pass, final_total),
+            "writer_pass": writer_pass, "writer_fail": writer_fail,
+            "wip": max(0, writer_total - final_total),
+            "available_macs": int(metrics.get("available", 0) or 0),
+            "reserved_macs": int(metrics.get("reserved", 0) or 0),
         },
-        "daily": daily, "stages": stages, "stations": stations, "recent": recent, "refresh_seconds": REFRESH_SECONDS,
+        "daily": daily, "stages": stages, "stations": stations, "recent": recent,
+        "refresh_seconds": REFRESH_SECONDS,
     }
 
 
@@ -360,7 +407,7 @@ def valid_dashboard_auth(header: str) -> bool:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ETECloudMES/12.0"
+    server_version = "ETECloudMES/13.0"
 
     def send_bytes(self, data: bytes, content_type: str, status: int = 200, headers: dict[str, str] | None = None) -> None:
         self.send_response(status)
@@ -395,22 +442,22 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         try:
             if path == "/api/health":
-                return self.send_json({"ok": True, "service": "ETE Cloud MES", "version": "12.0", "database": db.backend_name, "events": db.count()})
+                return self.send_json({"ok": True, "service": "ETE Cloud MES", "version": "13.0", "database": db.backend_name, "events": db.count()})
             if path == "/api/dashboard":
                 if not self.require_dashboard():
                     return
                 start, end = parse_range(query)
                 return self.send_json(dashboard_data(start, end))
-            if path == "/export/verification.csv":
+            if path in {"/export/verification.csv", "/export/production.csv"}:
                 if not self.require_dashboard():
                     return
                 start, end = parse_range(query)
-                events = [e for e in db.events_between(start, end) if e["event_type"] == "QUALITY_VERIFICATION_RESULT"]
-                fields = ["completed_at", "plant_id", "station_id", "router_slot", "router_ip", "mac", "serial_number", "scanned_serial_number", "gpon_number", "part_number", "status", "server_check", "serial_scan_result", "wifi_calibration_result", "bob_calibration_result", "firmware_result", "firmware_version", "led_result", "reset_result", "wps_result", "user_mode_result", "detail", "event_id"]
+                events = [e for e in db.events_between(start, end) if e["event_type"] != "MAC_POOL_SNAPSHOT"]
+                fields = ["completed_at", "event_type", "stage_name", "plant_id", "station_id", "router_slot", "router_ip", "mac", "serial_number", "scanned_serial_number", "gpon_number", "part_number", "status", "source_file", "source_offset", "server_check", "serial_scan_result", "wifi_calibration_result", "bob_calibration_result", "firmware_result", "firmware_version", "led_result", "reset_result", "wps_result", "user_mode_result", "detail", "raw_log", "event_id"]
                 out = io.StringIO(); writer = csv.DictWriter(out, fieldnames=fields); writer.writeheader()
                 for event in events:
                     row = {key: event.get(key, "") for key in fields}; row["completed_at"] = as_iso(row["completed_at"]); writer.writerow(row)
-                return self.send_bytes(out.getvalue().encode("utf-8"), "text/csv; charset=utf-8", headers={"Content-Disposition": f"attachment; filename=verification_{start}_to_{end}.csv"})
+                return self.send_bytes(out.getvalue().encode("utf-8"), "text/csv; charset=utf-8", headers={"Content-Disposition": f"attachment; filename=production_{start}_to_{end}.csv"})
             if path == "/":
                 if not self.require_dashboard():
                     return
@@ -467,6 +514,6 @@ class Handler(BaseHTTPRequestHandler):
 db = CloudDatabase()
 
 if __name__ == "__main__":
-    print(f"ETE Cloud MES v12: http://{HOST}:{PORT}")
+    print(f"ETE Cloud MES v13: http://{HOST}:{PORT}")
     print(f"Database backend: {db.backend_name}")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

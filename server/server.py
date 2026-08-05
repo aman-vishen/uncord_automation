@@ -203,6 +203,29 @@ class MacDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_cloud_sync_status_created
                     ON cloud_sync_queue(status, created_at);
+
+                CREATE TABLE IF NOT EXISTS stage_log_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
+                    stage_name TEXT NOT NULL,
+                    station_id TEXT NOT NULL,
+                    client_ip TEXT,
+                    source_file TEXT,
+                    source_offset INTEGER,
+                    status TEXT NOT NULL,
+                    mac TEXT,
+                    serial_number TEXT,
+                    gpon_number TEXT,
+                    part_number TEXT,
+                    detail TEXT,
+                    raw_record TEXT,
+                    completed_at TEXT NOT NULL,
+                    received_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_stage_log_stage_completed
+                    ON stage_log_history(stage_name, completed_at);
+                CREATE INDEX IF NOT EXISTS idx_stage_log_mac ON stage_log_history(mac);
+                CREATE INDEX IF NOT EXISTS idx_stage_log_serial ON stage_log_history(serial_number);
                 """
             )
             # Automatic schema migration for databases created by older releases.
@@ -435,6 +458,103 @@ class MacDatabase:
             "completed_at": now_iso(),
             "metrics": stats,
         }
+
+    # ---------- External production-stage log ingestion ----------
+    ALLOWED_STAGE_NAMES = {
+        "WIFI_CALIBRATION",
+        "LABEL_PRINTING",
+        "BOB_CALIBRATION",
+        "WIFI_COUPLING_VOIP",
+    }
+
+    def report_stage_log_batch(self, client_id: str, records: list[dict], client_ip: str) -> dict:
+        client_id = (client_id or "STAGE-LOG-COLLECTOR").strip()[:150]
+        if not isinstance(records, list) or not records:
+            raise AppError("records must be a non-empty list")
+        if len(records) > 500:
+            raise AppError("Maximum 500 stage records per request")
+        accepted: list[str] = []
+        duplicates: list[str] = []
+        rejected: list[dict] = []
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            for raw in records:
+                try:
+                    if not isinstance(raw, dict):
+                        raise AppError("record must be an object")
+                    event_id = str(raw.get("event_id", "")).strip()[:250]
+                    stage_name = str(raw.get("stage_name", "")).strip().upper()
+                    status = str(raw.get("status", "")).strip().upper()
+                    if not event_id:
+                        raise AppError("event_id is required")
+                    if stage_name not in self.ALLOWED_STAGE_NAMES:
+                        raise AppError(f"Unsupported stage_name: {stage_name}")
+                    if status not in {"PASS", "FAIL", "ERROR"}:
+                        raise AppError("status must be PASS, FAIL, or ERROR")
+                    mac_text = str(raw.get("mac", "")).strip()
+                    mac = validate_mac(mac_text) if mac_text else ""
+                    completed_at = str(raw.get("completed_at", "")).strip() or now_iso()
+                    station_id = str(raw.get("station_id", "")).strip()[:150] or client_id
+                    values = (
+                        event_id, stage_name, station_id, (client_ip or "")[:64],
+                        str(raw.get("source_file", ""))[:1000], int(raw.get("source_offset", 0) or 0),
+                        status, mac, str(raw.get("serial_number", ""))[:250],
+                        str(raw.get("gpon_number", ""))[:250], str(raw.get("part_number", ""))[:250],
+                        str(raw.get("detail", ""))[:8000], str(raw.get("raw_record", ""))[:16000],
+                        completed_at, now_iso(),
+                    )
+                    cur = con.execute(
+                        """INSERT OR IGNORE INTO stage_log_history(
+                           event_id,stage_name,station_id,client_ip,source_file,source_offset,status,
+                           mac,serial_number,gpon_number,part_number,detail,raw_record,completed_at,received_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values,
+                    )
+                    if cur.rowcount == 0:
+                        duplicates.append(event_id)
+                        continue
+                    accepted.append(event_id)
+                    cloud_payload = {
+                        "plant_id": "",
+                        "station_id": station_id,
+                        "router_slot": str(raw.get("router_slot", ""))[:30],
+                        "router_ip": str(raw.get("router_ip", ""))[:100],
+                        "stage_name": stage_name,
+                        "source_file": str(raw.get("source_file", ""))[:1000],
+                        "source_offset": int(raw.get("source_offset", 0) or 0),
+                        "mac": colon_mac(mac) if mac else "",
+                        "serial_number": str(raw.get("serial_number", ""))[:250],
+                        "gpon_number": str(raw.get("gpon_number", ""))[:250],
+                        "part_number": str(raw.get("part_number", ""))[:250],
+                        "status": status,
+                        "detail": str(raw.get("detail", ""))[:8000],
+                        "raw_log": str(raw.get("raw_record", ""))[:16000],
+                        "completed_at": completed_at,
+                        "source_event_id": event_id,
+                    }
+                    self._queue_cloud_event(con, f"stage:{event_id}", "STAGE_LOG_RESULT", cloud_payload)
+                except Exception as exc:
+                    rejected.append({"event_id": str(raw.get("event_id", ""))[:250] if isinstance(raw, dict) else "", "error": str(exc)})
+            con.commit()
+        return {"ok": not rejected, "accepted_event_ids": accepted, "duplicate_event_ids": duplicates, "rejected": rejected}
+
+    def stage_log_stats(self) -> dict:
+        with self.connect() as con:
+            rows = con.execute(
+                """SELECT stage_name,status,COUNT(*) AS c FROM stage_log_history
+                   GROUP BY stage_name,status ORDER BY stage_name,status"""
+            ).fetchall()
+            recent = con.execute(
+                """SELECT stage_name,station_id,status,mac,serial_number,completed_at
+                   FROM stage_log_history ORDER BY id DESC LIMIT 20"""
+            ).fetchall()
+        by_stage: dict[str, dict[str, int]] = {}
+        for row in rows:
+            item = by_stage.setdefault(row["stage_name"], {"pass": 0, "fail": 0, "error": 0, "total": 0})
+            key = str(row["status"]).lower()
+            count = int(row["c"])
+            item[key] = count
+            item["total"] += count
+        return {"stages": by_stage, "recent": [dict(row) for row in recent]}
 
     # ---------- Existing MAC writer API ----------
     def allocate(self, client_id: str, request_id: str, client_ip: str) -> dict:
@@ -895,7 +1015,7 @@ class CloudSyncWorker:
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
-                    "User-Agent": "ETE-Factory-Sync/12.0",
+                    "User-Agent": "ETE-Factory-Sync/13.0",
                 },
             )
             with urlrequest.urlopen(req, timeout=self.timeout) as response:
@@ -932,7 +1052,7 @@ class ApiState:
 
 
 class MacApiHandler(BaseHTTPRequestHandler):
-    server_version = "ETEProductionServer/12.0"
+    server_version = "ETEProductionServer/13.0"
 
     def log_message(self, fmt, *args):
         return
@@ -971,11 +1091,13 @@ class MacApiHandler(BaseHTTPRequestHandler):
         self._touch()
         try:
             if self.path == "/api/health":
-                self._json(200, {"ok": True, "server_time": now_iso(), "version": "12.0"})
+                self._json(200, {"ok": True, "server_time": now_iso(), "version": "13.0"})
             elif self.path == "/api/stats":
                 self._json(200, {"ok": True, **self.state.db.stats()})
             elif self.path == "/api/cloud-sync":
                 self._json(200, {"ok": True, **self.state.db.cloud_sync_stats()})
+            elif self.path == "/api/stage-log/stats":
+                self._json(200, {"ok": True, **self.state.db.stage_log_stats()})
             else:
                 self._json(404, {"ok": False, "error": "Not found"})
         except Exception as exc:
@@ -1022,6 +1144,16 @@ class MacApiHandler(BaseHTTPRequestHandler):
                     user_mode_result=str(body.get("user_mode_result", "")), detail=str(body.get("detail", "")),
                 )
                 self._json(200, {**payload, "stats": self.state.db.stats()})
+            elif self.path in {"/api/stage-log/report", "/api/stage-log/batch"}:
+                records = body.get("records")
+                if records is None:
+                    records = [body]
+                payload = self.state.db.report_stage_log_batch(
+                    client_id=str(body.get("client_id", self.headers.get("X-Station-ID", ""))),
+                    records=records,
+                    client_ip=self.client_address[0],
+                )
+                self._json(200 if not payload.get("rejected") else 207, payload)
             else:
                 self._json(404, {"ok": False, "error": "Not found"})
         except AppError as exc:

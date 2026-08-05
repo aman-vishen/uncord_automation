@@ -58,6 +58,14 @@ def main() -> None:
             detail="smoke test",
         )
         assert db.stats()["verify_pass"] == 1
+        stage_result = db.report_stage_log_batch("LOG-01", [{
+            "event_id": "smoke-stage-1", "stage_name": "WIFI_CALIBRATION",
+            "station_id": "WIFI-CAL-01", "status": "PASS", "mac": allocation["mac"],
+            "serial_number": serial, "source_file": "wifi.log", "source_offset": 1,
+            "completed_at": server.now_iso(), "detail": "calibration pass",
+        }], "127.0.0.1")
+        assert stage_result["accepted_event_ids"] == ["smoke-stage-1"]
+        assert db.stage_log_stats()["stages"]["WIFI_CALIBRATION"]["pass"] == 1
 
         allocation2 = db.allocate("TEST-WRITER/R2", "request-2", "127.0.0.1")
         serial2, gpon2, _ = writer.build_identifiers(allocation2, writer_cfg)

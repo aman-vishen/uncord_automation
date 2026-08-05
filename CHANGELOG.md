@@ -1,16 +1,28 @@
 # Changelog
 
+## v13 — Six-stage MES and production log collector
+
+- Changed MES stage flow to:
+  1. MAC Write
+  2. Wi-Fi Calibration
+  3. Label Printing
+  4. BOB Calibration
+  5. Wi-Fi Coupling & VoIP
+  6. Verification
+- Added a branded Windows Stage Log Collector application.
+- Added REGEX, CSV and JSONL log parsers.
+- Added persistent file byte offsets and automatic log-rotation handling.
+- Added a durable collector upload queue and retry handling.
+- Added local server endpoints for external stage-log ingestion.
+- Added `stage_log_history` to the local production database.
+- Added cloud `STAGE_LOG_RESULT` events and PostgreSQL schema migration.
+- Added stage-specific PASS, FAIL, volume and yield analytics.
+- Added a visual six-stage process flow to the Render MES.
+- Updated production records and CSV exports to include stage, source log and raw log data.
+- Added duplicate-safe end-to-end tests for all six stages.
+
 ## v12 — Hybrid Render Cloud MES
 
-- Added durable `cloud_sync_queue` to the local central server.
-- Writer and Verifier results are committed locally and queued atomically.
-- Added background HTTPS batch synchronization with automatic retry.
-- Added deterministic event IDs and duplicate-safe cloud ingestion.
-- Added automatic backfill of completed v11 production history.
-- Added cloud status, pending/synced counts, queue table and Sync Now control to server UI.
-- Added Render-ready MES ingestion API.
-- Added PostgreSQL storage and schema initialization.
-- Added dashboard Basic Authentication and separate ingestion Bearer authentication.
-- Added Render free/demo and paid/production Blueprints.
-- Preserved the optional local SQLite MES dashboard.
-- Preserved all UNCORD Writer and Verifier commands from v11.
+- Added durable local-to-cloud synchronization.
+- Added PostgreSQL-backed Render MES and ingestion API.
+- Added automatic retry, event IDs, cloud status and offline production continuity.

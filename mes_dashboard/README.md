@@ -1,55 +1,25 @@
-# ETE Cloud MES v12
+# ETE Cloud MES v13
 
-Render-ready web MES with an HTTPS ingestion API and PostgreSQL storage.
+The Render dashboard now reports six production stages:
 
-## Cloud features
+1. MAC Write
+2. Wi-Fi Calibration
+3. Label Printing
+4. BOB Calibration
+5. Wi-Fi Coupling & VoIP
+6. Verification
 
-- Idempotent batch event ingestion
-- PostgreSQL production history
-- Daily volume, PASS/FAIL and yield
-- Writer and final-verification analysis
-- Stage-wise Wi-Fi, BOB, firmware, LED, Reset, WPS and User Mode results
-- Station performance
-- Unit traceability and CSV export
-- Basic Authentication for dashboard users
-- Separate Bearer API key for factory ingestion
+The cloud API accepts `IDENTITY_WRITER_RESULT`, `STAGE_LOG_RESULT`, `QUALITY_VERIFICATION_RESULT` and `MAC_POOL_SNAPSHOT` events. PostgreSQL schema migration adds stage name, source file, source offset and raw-log fields automatically.
 
-## Render environment variables
+The dashboard provides line input, finished output, estimated WIP, final yield, stage yield, station analysis, recent stage records and CSV export.
 
-```text
-DATABASE_URL          automatically linked by render.yaml
-INGEST_API_KEY        required secret
-DASHBOARD_USERNAME    admin by default
-DASHBOARD_PASSWORD    required secret
-REFRESH_SECONDS       10
-MAX_BATCH_SIZE        500
-```
-
-## Local cloud-mode test
-
-`app.py` falls back to `cloud_mes.db` when `DATABASE_URL` is absent.
-
-```bat
-run_mes_cloud_local.bat
-```
-
-Defaults for local testing:
+For Render, set:
 
 ```text
-Dashboard: http://localhost:8080
-Username: admin
-Password: admin
-Ingest key: local-development-key
+DATABASE_URL
+INGEST_API_KEY
+DASHBOARD_USERNAME
+DASHBOARD_PASSWORD
 ```
 
-Do not use these defaults in production.
-
-## Legacy local factory dashboard
-
-To view the local SQLite factory database directly without cloud sync:
-
-```bat
-run_mes_local_factory.bat
-```
-
-This runs `local_dashboard.py` and reads `../server/mac_server.db` through `config.ini`.
+The local factory server—not the individual stage applications—synchronizes records to the Render ingestion API.
