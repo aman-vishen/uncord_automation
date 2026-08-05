@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.db
+*.db-shm
+*.db-wal
+pending_jobs.json
+pending_verifications.json
+*.log
+.venv/
+venv/
+.env
+.DS_Store
+Thumbs.db

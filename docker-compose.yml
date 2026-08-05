@@ -1,0 +1,8 @@
+services:
+  mes:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./server/mac_server.db:/app/server/mac_server.db
+    restart: unless-stopped

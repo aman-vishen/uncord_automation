@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: ete-production-mes
+    runtime: docker
+    dockerfilePath: ./mes_dashboard/Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 8080
