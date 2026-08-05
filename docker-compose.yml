@@ -1,8 +1,35 @@
 services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ete_mes
+      POSTGRES_USER: ete_mes
+      POSTGRES_PASSWORD: local-postgres-password
+    volumes:
+      - ete_mes_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ete_mes -d ete_mes"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   mes:
-    build: .
+    build:
+      context: .
+      dockerfile: mes_dashboard/Dockerfile
     ports:
       - "8080:8080"
-    volumes:
-      - ./server/mac_server.db:/app/server/mac_server.db
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgresql://ete_mes:local-postgres-password@db:5432/ete_mes
+      INGEST_API_KEY: local-development-key
+      DASHBOARD_USERNAME: admin
+      DASHBOARD_PASSWORD: admin
+      REFRESH_SECONDS: 10
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  ete_mes_pgdata:

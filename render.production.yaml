@@ -1,8 +1,10 @@
+# Paid production Blueprint. Rename this file to render.yaml before creating
+# the production Blueprint, or select this path in Render.
 services:
   - type: web
     name: ete-production-mes
     runtime: docker
-    plan: free
+    plan: starter
     region: singapore
     dockerfilePath: ./mes_dashboard/Dockerfile
     healthCheckPath: /api/health
@@ -24,5 +26,6 @@ services:
 
 databases:
   - name: ete-production-mes-db
-    plan: free
+    plan: basic-256mb
     region: singapore
+    diskSizeGB: 15

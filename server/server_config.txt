@@ -1,4 +1,15 @@
-# Central server settings
+# Local central server settings
 BIND=0.0.0.0
 PORT=8765
 API_KEY=change-this-key
+
+# Cloud MES synchronization
+# Writer and Verifier PCs continue using this LOCAL server URL.
+# The local server uploads completed records to Render in the background.
+CLOUD_MES_ENABLED=0
+CLOUD_MES_URL=https://ete-production-mes.onrender.com
+CLOUD_MES_API_KEY=replace-with-the-same-INGEST_API_KEY-used-on-render
+PLANT_ID=UNCORD-MUMBAI
+CLOUD_SYNC_INTERVAL_SECONDS=30
+CLOUD_BATCH_SIZE=100
+CLOUD_REQUEST_TIMEOUT_SECONDS=60
