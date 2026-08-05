@@ -1,0 +1,32 @@
+# ============================================================
+# UNCORD ROUTER IDENTITY WRITER COMMANDS
+# Source: UNCORD_Router_Command_Template.xlsx (AX3000 / AC1200)
+# ============================================================
+# Supported placeholders:
+# {MAC} / {MAC_COLON} = AA:BB:CC:DD:EE:FF
+# {MAC_DASH}          = AA-BB-CC-DD-EE-FF
+# {MAC_NOSEP}         = AABBCCDDEEFF
+# {SERIAL}            = generated serial number
+# {GPON}              = generated GPON number
+#
+# The workbook states that prolinecmd changes require a reset.
+# Therefore the app writes and verifies first, then runs [FINALIZE].
+
+[WRITE]
+prolinecmd macaddr set {MAC_NOSEP}
+prolinecmd hwsn set {SERIAL}
+prolinecmd gponsn set {GPON}
+prolinecmd telnetEnable set 1
+
+[VERIFY]
+prolinecmd macaddr get
+prolinecmd hwsn get
+prolinecmd gponsn get
+
+[FINALIZE]
+firstboot -y -r
+
+# Optional workbook commands (disabled in the workbook; remove # to use only
+# after confirming they are required for your production process):
+# prolinecmd ssid set "<SSID_NAME>"
+# prolinecmd wpakey set "<PASSWORD>"

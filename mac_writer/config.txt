@@ -1,0 +1,81 @@
+# ============================================================
+# PRODUCT / COMMAND PROFILE
+PRODUCT_MODEL=AX3000
+COMMAND_SOURCE=UNCORD_Router_Command_Template.xlsx
+
+# CENTRAL MAC SERVER
+# ============================================================
+SERVER_URL=http://192.168.20.10:8765
+SERVER_API_KEY=change-this-key
+STATION_ID=LINE1-STATION1
+SERVER_TIMEOUT=5
+
+# ============================================================
+# ROUTERS CONNECTED THROUGH THE MANAGED SWITCH
+# Add/change each router IP here. Disabled slots are ignored.
+# All enabled router IPs must be unique and reachable from this PC.
+# ============================================================
+ROUTER_COUNT=8
+
+ROUTER_1_ENABLED=1
+ROUTER_1_NAME=Router 1
+ROUTER_1_IP=192.168.20.101
+
+ROUTER_2_ENABLED=1
+ROUTER_2_NAME=Router 2
+ROUTER_2_IP=192.168.20.102
+
+ROUTER_3_ENABLED=1
+ROUTER_3_NAME=Router 3
+ROUTER_3_IP=192.168.20.103
+
+ROUTER_4_ENABLED=1
+ROUTER_4_NAME=Router 4
+ROUTER_4_IP=192.168.20.104
+
+ROUTER_5_ENABLED=1
+ROUTER_5_NAME=Router 5
+ROUTER_5_IP=192.168.20.105
+
+ROUTER_6_ENABLED=1
+ROUTER_6_NAME=Router 6
+ROUTER_6_IP=192.168.20.106
+
+ROUTER_7_ENABLED=1
+ROUTER_7_NAME=Router 7
+ROUTER_7_IP=192.168.20.107
+
+ROUTER_8_ENABLED=1
+ROUTER_8_NAME=Router 8
+ROUTER_8_IP=192.168.20.108
+
+# ============================================================
+# DEFAULT TELNET SETTINGS - used by all router slots
+# A slot can override any setting, e.g. ROUTER_3_PORT=2323
+# or ROUTER_3_USERNAME=root
+# ============================================================
+PORT=23
+USERNAME=admin
+PASSWORD=admin
+LOGIN_PROMPT=login:
+PASSWORD_PROMPT=Password:
+COMMAND_PROMPT=#
+TIMEOUT=10
+COMMAND_DELAY=0.3
+
+# Optional connection check timeout before programming
+PING_TIMEOUT=1.5
+
+# ============================================================
+# SERIAL NUMBER AND GPON NUMBER GENERATION
+# Values are generated from the unique sequence returned by the server.
+# Available template placeholders:
+# {SEQ}, {SEQ_PAD6}, {SEQ_PAD8}, {SEQ_PAD10}, {SEQ_HEX6}, {SEQ_HEX8}
+# {MAC}, {MAC_NOSEP}, {MAC_LAST6}, {MAC_LAST8}
+# The supplied workbook shows ZTEG + 8 hexadecimal characters for both
+# hardware serial number and GPON number. Confirm this vendor prefix before production.
+# ============================================================
+SERIAL_TEMPLATE=ZTEG{SEQ_HEX8}
+GPON_TEMPLATE=ZTEG{SEQ_HEX8}
+SERIAL_VALID_REGEX=^[A-Za-z0-9._/-]{4,64}$
+GPON_VALID_REGEX=^[A-Za-z0-9._/-]{4,64}$

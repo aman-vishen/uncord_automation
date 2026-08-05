@@ -1,0 +1,4 @@
+# Central server settings
+BIND=0.0.0.0
+PORT=8765
+API_KEY=change-this-key

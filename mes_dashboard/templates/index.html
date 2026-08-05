@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ETE Solutions India MES</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><img src="/assets/ete_logo.png" alt="ETE Solutions India"><div><strong>ETE MES</strong><small>Production intelligence</small></div></div>
+    <nav>
+      <button class="active" data-view="overview">Overview</button>
+      <button data-view="stages">Stage Analysis</button>
+      <button data-view="stations">Stations</button>
+      <button data-view="records">Production Records</button>
+    </nav>
+    <div class="server-card"><span id="healthDot"></span><div><strong id="healthText">Checking server</strong><small>Central production database</small></div></div>
+  </aside>
+  <main>
+    <header>
+      <div><h1>Production MES Dashboard</h1><p>MAC writing, identity programming and final quality verification</p></div>
+      <div class="filters">
+        <label>From<input id="start" type="date" value="{{ start }}"></label>
+        <label>To<input id="end" type="date" value="{{ end }}"></label>
+        <button id="apply">Apply</button>
+        <a id="export" class="secondary" href="#">Export CSV</a>
+      </div>
+    </header>
+
+    <section id="overview" class="view active">
+      <div class="kpis" id="kpis"></div>
+      <div class="grid two">
+        <article class="panel"><div class="panel-head"><h2>Daily production volume</h2><span id="rangeText"></span></div><div id="dailyChart" class="chart"></div></article>
+        <article class="panel"><div class="panel-head"><h2>Final yield</h2><span>PASS vs FAIL</span></div><div id="yieldRing" class="yield-wrap"></div></article>
+      </div>
+      <article class="panel"><div class="panel-head"><h2>Stage yield overview</h2><span>Lowest-yield stages require attention</span></div><div id="stageOverview" class="stage-list"></div></article>
+    </section>
+
+    <section id="stages" class="view"><article class="panel"><div class="panel-head"><h2>Stage-wise analysis</h2><span>Tested, PASS, FAIL and first-pass yield</span></div><div class="table-wrap"><table><thead><tr><th>Stage</th><th>Tested</th><th>PASS</th><th>FAIL</th><th>Yield</th><th>Performance</th></tr></thead><tbody id="stageTable"></tbody></table></div></article></section>
+
+    <section id="stations" class="view"><article class="panel"><div class="panel-head"><h2>Station performance</h2><span>Volume and quality by client station</span></div><div class="table-wrap"><table><thead><tr><th>Station</th><th>Total</th><th>PASS</th><th>FAIL</th><th>Yield</th><th>Last result</th></tr></thead><tbody id="stationTable"></tbody></table></div></article></section>
+
+    <section id="records" class="view"><article class="panel"><div class="panel-head"><h2>Latest production records</h2><input id="search" placeholder="Search MAC, serial, GPON, station or IP"></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>MAC</th><th>Serial</th><th>GPON</th><th>Part</th><th>Station</th><th>Router IP</th><th>Wi-Fi</th><th>BOB</th><th>Firmware</th><th>Result</th></tr></thead><tbody id="recordsTable"></tbody></table></div></article></section>
+  </main>
+  <script>window.MES_REFRESH={{ refresh_seconds }};</script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
