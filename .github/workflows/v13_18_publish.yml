@@ -1,0 +1,51 @@
+name: Publish v13.18 to main
+
+on:
+  push:
+    branches:
+      - v13-18-firmware-last
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ hashFiles('.release/v13_18_payload/READY') != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: v13-18-firmware-last
+          fetch-depth: 0
+
+      - name: Reconstruct v13.18 source payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .release/v13_18_payload/part*.b64 | base64 -d > /tmp/v13_18_text_payload.tar.gz
+          echo "8df011ecf162f6b982f3ad5a4d5192dc53fb09960d6807778fc9e51fb982b92c  /tmp/v13_18_text_payload.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/v13_18_text_payload.tar.gz -C .
+
+          # The current package uses the same ETE logo blob for Box Build.
+          mkdir -p box_build/assets
+          cp mac_writer/assets/ete_logo.png box_build/assets/ete_logo.png
+
+          # Runtime data and temporary release payload must never be committed.
+          rm -rf .release
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          find . -type f \( -name '*.pyc' -o -name '*.db' -o -name '*.db-shm' -o -name '*.db-wal' \) -delete
+
+      - name: Commit and publish main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "ETE Release Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+          else
+            git commit -m "Release v13.18 firmware-last"
+          fi
+          git push origin HEAD:main
