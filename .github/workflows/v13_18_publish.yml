@@ -1,40 +1,52 @@
-name: Publish v13.18 to main
+name: Publish v13.18 clean source to main
 
 on:
   push:
     branches:
       - v13-18-firmware-last
+    paths:
+      - '.release/v13_18_payload_fresh/READY'
 
 permissions:
   contents: write
 
 jobs:
   publish:
-    if: ${{ hashFiles('.release/v13_18_payload/READY') != '' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout release branch
+      - name: Checkout current main
         uses: actions/checkout@v4
         with:
-          ref: v13-18-firmware-last
+          ref: main
           fetch-depth: 0
+
+      - name: Fetch release payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin v13-18-firmware-last
+          rm -rf /tmp/v13_18_release
+          mkdir -p /tmp/v13_18_release
+          git archive origin/v13-18-firmware-last .release/v13_18_payload_fresh | tar -x -C /tmp/v13_18_release
 
       - name: Reconstruct v13.18 source payload
         shell: bash
         run: |
           set -euo pipefail
-          cat .release/v13_18_payload/part*.b64 | base64 -d > /tmp/v13_18_text_payload.tar.gz
-          echo "8df011ecf162f6b982f3ad5a4d5192dc53fb09960d6807778fc9e51fb982b92c  /tmp/v13_18_text_payload.tar.gz" | sha256sum -c -
+          cat /tmp/v13_18_release/.release/v13_18_payload_fresh/fresh*.b64 | base64 -d > /tmp/v13_18_text_payload.tar.gz
+          echo "67aa18ea7262172355b3da2f6903ca2952f96eb70d63f127f70eaaf928829929  /tmp/v13_18_text_payload.tar.gz" | sha256sum -c -
           tar -xzf /tmp/v13_18_text_payload.tar.gz -C .
 
-          # The current package uses the same ETE logo blob for Box Build.
+          # Binary assets already present in main are retained. Add the Box Build logo from the shared ETE logo.
           mkdir -p box_build/assets
           cp mac_writer/assets/ete_logo.png box_build/assets/ete_logo.png
 
-          # Runtime data and temporary release payload must never be committed.
+          # Remove temporary publishing files and all runtime/generated data.
           rm -rf .release
+          rm -f .github/workflows/v13_18_publish.yml
           find . -type d -name __pycache__ -prune -exec rm -rf {} +
           find . -type f \( -name '*.pyc' -o -name '*.db' -o -name '*.db-shm' -o -name '*.db-wal' \) -delete
+          rm -f mac_writer/pending_jobs.json
 
       - name: Commit and publish main
         shell: bash
@@ -45,7 +57,7 @@ jobs:
           git add -A
           if git diff --cached --quiet; then
             echo "No source changes to commit."
-          else
-            git commit -m "Release v13.18 firmware-last"
+            exit 0
           fi
+          git commit -m "Release v13.18 firmware-last clean source"
           git push origin HEAD:main
