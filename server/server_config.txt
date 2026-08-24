@@ -13,3 +13,9 @@ PLANT_ID=UNCORD-MUMBAI
 CLOUD_SYNC_INTERVAL_SECONDS=30
 CLOUD_BATCH_SIZE=100
 CLOUD_REQUEST_TIMEOUT_SECONDS=60
+
+# Local firmware repository / MAC Writer control
+# The server GUI can change the persisted ON/OFF state and selected firmware.
+# These are only first-start defaults for a database that has no firmware settings yet.
+FIRMWARE_UPDATE_ENABLED=0
+FIRMWARE_FILE=V1.0.1_260316.bin

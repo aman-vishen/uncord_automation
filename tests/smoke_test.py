@@ -24,7 +24,10 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         db = server.MacDatabase(Path(tmp) / "test.db")
-        db.import_macs(["14-D6-7C-00-00-01", "14-D6-7C-00-00-02"])
+        db.import_identities([
+            {"mac":"14-D6-7C-00-00-01","serial_number":"SN00000001","gpon_number":"UNCO00000001"},
+            {"mac":"14-D6-7C-00-00-02","serial_number":"SN00000002","gpon_number":"UNCO00000002"},
+        ])
         allocation = db.allocate("TEST-WRITER/R1", "request-1", "127.0.0.1")
         serial, gpon, _ = writer.build_identifiers(allocation, writer_cfg)
         db.report_result(

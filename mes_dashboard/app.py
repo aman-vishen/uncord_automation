@@ -38,7 +38,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 
 EVENT_COLUMNS = [
     "event_id", "event_type", "plant_id", "station_id", "router_slot", "router_ip",
-    "mac", "serial_number", "scanned_serial_number", "gpon_number", "part_number",
+    "mac", "serial_number", "scanned_serial_number", "gpon_number", "pcb_serial_number", "part_number",
     "status", "writer_state", "server_check", "serial_scan_result",
     "wifi_calibration_result", "bob_calibration_result", "firmware_result",
     "stage_name", "source_file", "source_offset", "raw_log",
@@ -112,7 +112,7 @@ class CloudDatabase:
                 """CREATE TABLE IF NOT EXISTS production_events (
                     event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, plant_id TEXT NOT NULL,
                     station_id TEXT NOT NULL, router_slot TEXT, router_ip TEXT, mac TEXT,
-                    serial_number TEXT, scanned_serial_number TEXT, gpon_number TEXT, part_number TEXT,
+                    serial_number TEXT, scanned_serial_number TEXT, gpon_number TEXT, pcb_serial_number TEXT, part_number TEXT,
                     status TEXT NOT NULL, writer_state TEXT, server_check TEXT, serial_scan_result TEXT,
                     wifi_calibration_result TEXT, bob_calibration_result TEXT, firmware_result TEXT,
                     firmware_version TEXT, led_result TEXT, reset_result TEXT, wps_result TEXT,
@@ -124,11 +124,13 @@ class CloudDatabase:
                 "ALTER TABLE production_events ADD COLUMN IF NOT EXISTS source_file TEXT",
                 "ALTER TABLE production_events ADD COLUMN IF NOT EXISTS source_offset BIGINT",
                 "ALTER TABLE production_events ADD COLUMN IF NOT EXISTS raw_log TEXT",
+                "ALTER TABLE production_events ADD COLUMN IF NOT EXISTS pcb_serial_number TEXT",
                 "CREATE INDEX IF NOT EXISTS idx_events_completed ON production_events(completed_at DESC)",
                 "CREATE INDEX IF NOT EXISTS idx_events_type_completed ON production_events(event_type, completed_at DESC)",
                 "CREATE INDEX IF NOT EXISTS idx_events_plant_completed ON production_events(plant_id, completed_at DESC)",
                 "CREATE INDEX IF NOT EXISTS idx_events_mac ON production_events(mac)",
                 "CREATE INDEX IF NOT EXISTS idx_events_serial ON production_events(serial_number)",
+                "CREATE INDEX IF NOT EXISTS idx_events_pcb_serial ON production_events(pcb_serial_number)",
             ]
             with self.connect() as con:
                 with con.cursor() as cur:
@@ -140,7 +142,7 @@ class CloudDatabase:
                 CREATE TABLE IF NOT EXISTS production_events (
                     event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, plant_id TEXT NOT NULL,
                     station_id TEXT NOT NULL, router_slot TEXT, router_ip TEXT, mac TEXT,
-                    serial_number TEXT, scanned_serial_number TEXT, gpon_number TEXT, part_number TEXT,
+                    serial_number TEXT, scanned_serial_number TEXT, gpon_number TEXT, pcb_serial_number TEXT, part_number TEXT,
                     status TEXT NOT NULL, writer_state TEXT, server_check TEXT, serial_scan_result TEXT,
                     wifi_calibration_result TEXT, bob_calibration_result TEXT, firmware_result TEXT,
                     firmware_version TEXT, led_result TEXT, reset_result TEXT, wps_result TEXT,
@@ -159,10 +161,11 @@ class CloudDatabase:
                 existing = {row[1] for row in con.execute("PRAGMA table_info(production_events)")}
                 for column, declaration in {
                     "stage_name": "TEXT", "source_file": "TEXT",
-                    "source_offset": "INTEGER", "raw_log": "TEXT",
+                    "source_offset": "INTEGER", "raw_log": "TEXT", "pcb_serial_number": "TEXT",
                 }.items():
                     if column not in existing:
                         con.execute(f"ALTER TABLE production_events ADD COLUMN {column} {declaration}")
+                con.execute("CREATE INDEX IF NOT EXISTS idx_events_pcb_serial ON production_events(pcb_serial_number)")
                 con.commit()
 
     def insert_events(self, events: Iterable[dict[str, Any]]) -> tuple[list[str], list[str], list[dict[str, str]]]:
@@ -223,6 +226,43 @@ class CloudDatabase:
         rows = self._query("SELECT COUNT(*) AS c FROM production_events", ())
         return int(rows[0]["c"] if rows else 0)
 
+    def traceability(self, query: str) -> dict[str, Any]:
+        q = normalize_text(query, 250)
+        if not q:
+            return {"found": False, "identity": {}, "history": []}
+        compact_q = "".join(ch for ch in q.upper() if ch.isalnum())
+        direct = self._query(
+            """SELECT * FROM production_events WHERE
+               UPPER(COALESCE(mac,''))=UPPER(?) OR
+               UPPER(REPLACE(REPLACE(COALESCE(mac,''),':',''),'-',''))=UPPER(?) OR
+               UPPER(COALESCE(serial_number,''))=UPPER(?) OR
+               UPPER(COALESCE(gpon_number,''))=UPPER(?) OR
+               UPPER(COALESCE(pcb_serial_number,''))=UPPER(?)
+               ORDER BY completed_at DESC LIMIT 100""",
+            (q, compact_q, q, q, q),
+        )
+        if not direct:
+            return {"found": False, "identity": {}, "history": []}
+        mac = next((str(r.get("mac") or "") for r in direct if r.get("mac")), "")
+        history = self._query(
+            "SELECT * FROM production_events WHERE UPPER(COALESCE(mac,''))=UPPER(?) AND event_type<>'MAC_POOL_SNAPSHOT' ORDER BY completed_at ASC LIMIT 1000",
+            (mac,),
+        ) if mac else direct
+        def newest(field: str) -> str:
+            for row in reversed(history):
+                value = str(row.get(field) or "").strip()
+                if value:
+                    return value
+            return ""
+        return {
+            "found": True,
+            "identity": {
+                "mac": mac, "serial_number": newest("serial_number"), "gpon_number": newest("gpon_number"),
+                "pcb_serial_number": newest("pcb_serial_number"), "part_number": newest("part_number"),
+            },
+            "history": history,
+        }
+
     def _query(self, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
         with self.connect() as con:
             cur = con.cursor()
@@ -250,7 +290,7 @@ def validate_event(raw: Any, postgres: bool) -> dict[str, Any]:
     if event_type != "MAC_POOL_SNAPSHOT" and status not in {"PASS", "FAIL", "ERROR"}:
         raise ValueError("status must be PASS, FAIL, or ERROR")
     stage_name = normalize_text(raw.get("stage_name"), 100).upper()
-    allowed_stages = {"WIFI_CALIBRATION", "LABEL_PRINTING", "BOB_CALIBRATION", "WIFI_COUPLING_VOIP"}
+    allowed_stages = {"WIFI_CALIBRATION", "LABEL_PRINTING", "BOB_CALIBRATION", "WIFI_COUPLING_VOIP", "BOX_BUILD"}
     if event_type == "STAGE_LOG_RESULT" and stage_name not in allowed_stages:
         raise ValueError("Unsupported or missing stage_name")
     if event_type == "MAC_POOL_SNAPSHOT":
@@ -262,7 +302,9 @@ def validate_event(raw: Any, postgres: bool) -> dict[str, Any]:
         "router_slot": normalize_text(raw.get("router_slot"), 30), "router_ip": normalize_text(raw.get("router_ip"), 100),
         "mac": normalize_text(raw.get("mac"), 50).upper(), "serial_number": normalize_text(raw.get("serial_number"), 250),
         "scanned_serial_number": normalize_text(raw.get("scanned_serial_number"), 250),
-        "gpon_number": normalize_text(raw.get("gpon_number"), 250), "part_number": normalize_text(raw.get("part_number"), 250),
+        "gpon_number": normalize_text(raw.get("gpon_number"), 250),
+        "pcb_serial_number": normalize_text(raw.get("pcb_serial_number"), 250),
+        "part_number": normalize_text(raw.get("part_number"), 250),
         "status": status, "writer_state": normalize_text(raw.get("writer_state"), 50).upper(),
         "server_check": normalize_text(raw.get("server_check"), 1000),
         "serial_scan_result": normalize_text(raw.get("serial_scan_result"), 50).upper(),
@@ -302,6 +344,18 @@ def parse_range(query: dict[str, list[str]]) -> tuple[date, date]:
     return start, end
 
 
+def display_event_stage(e: dict[str, Any]) -> str:
+    if e.get("event_type") == "IDENTITY_WRITER_RESULT":
+        return "MAC Write"
+    if e.get("event_type") == "QUALITY_VERIFICATION_RESULT":
+        return "Verification"
+    return {
+        "WIFI_CALIBRATION": "Wi-Fi Calibration", "LABEL_PRINTING": "Label Printing",
+        "BOB_CALIBRATION": "BOB Calibration", "WIFI_COUPLING_VOIP": "Wi-Fi Coupling & VoIP",
+        "BOX_BUILD": "Box Build",
+    }.get(e.get("stage_name") or "", e.get("stage_name") or "Production Stage")
+
+
 def dashboard_data(start: date, end: date) -> dict[str, Any]:
     events = db.events_between(start, end)
     writer = [e for e in events if e["event_type"] == "IDENTITY_WRITER_RESULT"]
@@ -316,13 +370,19 @@ def dashboard_data(start: date, end: date) -> dict[str, Any]:
     writer_pass, writer_fail, writer_total = result_counts(writer)
     final_pass, final_fail, final_total = result_counts(verifier)
 
+    wifi_calibration = [e for e in stage_logs if e.get("stage_name") == "WIFI_CALIBRATION"]
+    label_printing = [e for e in stage_logs if e.get("stage_name") == "LABEL_PRINTING"]
+    box_build = [e for e in stage_logs if e.get("stage_name") == "BOX_BUILD"]
+    bob_calibration = [e for e in stage_logs if e.get("stage_name") == "BOB_CALIBRATION"]
+    coupling_voip = [e for e in stage_logs if e.get("stage_name") == "WIFI_COUPLING_VOIP"]
     stage_groups: list[tuple[str, list[dict[str, Any]]]] = [
-        ("1. MAC Write", writer),
-        ("2. Wi-Fi Calibration", [e for e in stage_logs if e.get("stage_name") == "WIFI_CALIBRATION"]),
-        ("3. Label Printing", [e for e in stage_logs if e.get("stage_name") == "LABEL_PRINTING"]),
-        ("4. BOB Calibration", [e for e in stage_logs if e.get("stage_name") == "BOB_CALIBRATION"]),
-        ("5. Wi-Fi Coupling & VoIP", [e for e in stage_logs if e.get("stage_name") == "WIFI_COUPLING_VOIP"]),
-        ("6. Verification", verifier),
+        ("1. Wi-Fi Calibration", wifi_calibration),
+        ("2. Label Printing", label_printing),
+        ("3. Box Build", box_build),
+        ("4. MAC Write", writer),
+        ("5. BOB Calibration", bob_calibration),
+        ("6. Wi-Fi Coupling & VoIP", coupling_voip),
+        ("7. Verification", verifier),
     ]
     stages = []
     for label, rows in stage_groups:
@@ -350,22 +410,13 @@ def dashboard_data(start: date, end: date) -> dict[str, Any]:
     for item in stations:
         item["yield"] = safe_rate(item["pass"], item["total"])
 
-    def display_stage(e: dict[str, Any]) -> str:
-        if e["event_type"] == "IDENTITY_WRITER_RESULT": return "MAC Write"
-        if e["event_type"] == "QUALITY_VERIFICATION_RESULT": return "Verification"
-        return {
-            "WIFI_CALIBRATION": "Wi-Fi Calibration",
-            "LABEL_PRINTING": "Label Printing",
-            "BOB_CALIBRATION": "BOB Calibration",
-            "WIFI_COUPLING_VOIP": "Wi-Fi Coupling & VoIP",
-        }.get(e.get("stage_name") or "", e.get("stage_name") or "Production Stage")
-
     production_events = [e for e in events if e["event_type"] != "MAC_POOL_SNAPSHOT"]
     recent_rows = sorted(production_events, key=lambda e: as_iso(e["completed_at"]), reverse=True)[:200]
     recent = [{
-        "completed_at": as_iso(e["completed_at"]), "stage": display_stage(e),
+        "completed_at": as_iso(e["completed_at"]), "stage": display_event_stage(e),
         "mac": e["mac"] or "", "serial_number": e["serial_number"] or "",
-        "gpon_number": e["gpon_number"] or "", "part_number": e["part_number"] or "",
+        "gpon_number": e["gpon_number"] or "", "pcb_serial_number": e.get("pcb_serial_number") or "",
+        "part_number": e["part_number"] or "",
         "client_id": e["station_id"] or "", "router_ip": e["router_ip"] or "",
         "source_file": e.get("source_file") or "", "status": e["status"],
         "detail": e["detail"] or "", "event_type": e["event_type"],
@@ -376,11 +427,11 @@ def dashboard_data(start: date, end: date) -> dict[str, Any]:
     return {
         "range": {"start": start.isoformat(), "end": end.isoformat()},
         "kpi": {
-            "production_volume": final_total, "line_input": writer_total,
+            "production_volume": final_total, "line_input": len(wifi_calibration),
             "final_pass": final_pass, "final_fail": final_fail,
             "final_yield": safe_rate(final_pass, final_total),
             "writer_pass": writer_pass, "writer_fail": writer_fail,
-            "wip": max(0, writer_total - final_total),
+            "wip": max(0, len(wifi_calibration) - final_total),
             "available_macs": int(metrics.get("available", 0) or 0),
             "reserved_macs": int(metrics.get("reserved", 0) or 0),
         },
@@ -407,7 +458,7 @@ def valid_dashboard_auth(header: str) -> bool:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ETECloudMES/13.0"
+    server_version = "ETECloudMES/13.7"
 
     def send_bytes(self, data: bytes, content_type: str, status: int = 200, headers: dict[str, str] | None = None) -> None:
         self.send_response(status)
@@ -442,7 +493,22 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         try:
             if path == "/api/health":
-                return self.send_json({"ok": True, "service": "ETE Cloud MES", "version": "13.0", "database": db.backend_name, "events": db.count()})
+                return self.send_json({"ok": True, "service": "ETE Cloud MES", "version": "13.7", "database": db.backend_name, "events": db.count()})
+            if path == "/api/traceability":
+                if not self.require_dashboard():
+                    return
+                q = query.get("q", [""])[0]
+                result = db.traceability(q)
+                history = []
+                for e in result.get("history", []):
+                    history.append({
+                        "completed_at": as_iso(e.get("completed_at")), "stage": display_event_stage(e),
+                        "mac": e.get("mac") or "", "serial_number": e.get("serial_number") or "",
+                        "gpon_number": e.get("gpon_number") or "", "pcb_serial_number": e.get("pcb_serial_number") or "",
+                        "part_number": e.get("part_number") or "", "station_id": e.get("station_id") or "",
+                        "status": e.get("status") or "", "detail": e.get("detail") or "",
+                    })
+                return self.send_json({"ok": True, "found": result.get("found", False), "identity": result.get("identity", {}), "history": history})
             if path == "/api/dashboard":
                 if not self.require_dashboard():
                     return
@@ -453,7 +519,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 start, end = parse_range(query)
                 events = [e for e in db.events_between(start, end) if e["event_type"] != "MAC_POOL_SNAPSHOT"]
-                fields = ["completed_at", "event_type", "stage_name", "plant_id", "station_id", "router_slot", "router_ip", "mac", "serial_number", "scanned_serial_number", "gpon_number", "part_number", "status", "source_file", "source_offset", "server_check", "serial_scan_result", "wifi_calibration_result", "bob_calibration_result", "firmware_result", "firmware_version", "led_result", "reset_result", "wps_result", "user_mode_result", "detail", "raw_log", "event_id"]
+                fields = ["completed_at", "event_type", "stage_name", "plant_id", "station_id", "router_slot", "router_ip", "mac", "serial_number", "scanned_serial_number", "gpon_number", "pcb_serial_number", "part_number", "status", "source_file", "source_offset", "server_check", "serial_scan_result", "wifi_calibration_result", "bob_calibration_result", "firmware_result", "firmware_version", "led_result", "reset_result", "wps_result", "user_mode_result", "detail", "raw_log", "event_id"]
                 out = io.StringIO(); writer = csv.DictWriter(out, fieldnames=fields); writer.writeheader()
                 for event in events:
                     row = {key: event.get(key, "") for key in fields}; row["completed_at"] = as_iso(row["completed_at"]); writer.writerow(row)
@@ -514,6 +580,6 @@ class Handler(BaseHTTPRequestHandler):
 db = CloudDatabase()
 
 if __name__ == "__main__":
-    print(f"ETE Cloud MES v13: http://{HOST}:{PORT}")
+    print(f"ETE Cloud MES v13.7: http://{HOST}:{PORT}")
     print(f"Database backend: {db.backend_name}")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

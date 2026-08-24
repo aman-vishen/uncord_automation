@@ -11,3 +11,7 @@ venv/
 .env
 .DS_Store
 Thumbs.db
+!stage_log_collector/sample_logs/*.log
+mac_writer/firmware_cache/
+server/firmware/*
+!server/firmware/README.txt

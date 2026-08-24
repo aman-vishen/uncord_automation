@@ -1,25 +1,17 @@
-# ETE Cloud MES v13
+# ETE Cloud MES v13.7
 
-The Render dashboard now reports six production stages:
+The dashboard tracks the exact production flow:
 
-1. MAC Write
-2. Wi-Fi Calibration
-3. Label Printing
-4. BOB Calibration
-5. Wi-Fi Coupling & VoIP
-6. Verification
+1. Wi-Fi Calibration
+2. Label Printing
+3. Box Build
+4. MAC Write
+5. BOB Calibration
+6. Wi-Fi Coupling & VoIP
+7. Verification
 
-The cloud API accepts `IDENTITY_WRITER_RESULT`, `STAGE_LOG_RESULT`, `QUALITY_VERIFICATION_RESULT` and `MAC_POOL_SNAPSHOT` events. PostgreSQL schema migration adds stage name, source file, source offset and raw-log fields automatically.
+Line Input is based on Wi-Fi Calibration tested volume. Finished Output is based on Verification tested volume. Estimated WIP is input minus finished output.
 
-The dashboard provides line input, finished output, estimated WIP, final yield, stage yield, station analysis, recent stage records and CSV export.
+The cloud API accepts `IDENTITY_WRITER_RESULT`, `STAGE_LOG_RESULT`, `QUALITY_VERIFICATION_RESULT` and `MAC_POOL_SNAPSHOT`. `BOX_BUILD` is a `STAGE_LOG_RESULT` carrying `pcb_serial_number`.
 
-For Render, set:
-
-```text
-DATABASE_URL
-INGEST_API_KEY
-DASHBOARD_USERNAME
-DASHBOARD_PASSWORD
-```
-
-The local factory server—not the individual stage applications—synchronizes records to the Render ingestion API.
+Traceability search supports MAC, Serial Number, GPON Serial Number and PCB Serial Number.

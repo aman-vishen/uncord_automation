@@ -14,12 +14,13 @@
       <button data-view="stages">Stage Analysis</button>
       <button data-view="stations">Stations</button>
       <button data-view="records">Production Records</button>
+      <button data-view="traceability">Traceability</button>
     </nav>
     <div class="server-card"><span id="healthDot"></span><div><strong id="healthText">Checking server</strong><small>Render production database</small></div></div>
   </aside>
   <main>
     <header>
-      <div><h1>Production MES Dashboard</h1><p>Six-stage GPON router manufacturing line</p></div>
+      <div><h1>Production MES Dashboard</h1><p>Seven-stage GPON router manufacturing line</p></div>
       <div class="filters">
         <label>From<input id="start" type="date" value="{{ start }}"></label>
         <label>To<input id="end" type="date" value="{{ end }}"></label>
@@ -41,11 +42,19 @@
       <article class="panel"><div class="panel-head"><h2>Stage yield overview</h2><span>Lowest-yield stages require attention</span></div><div id="stageOverview" class="stage-list"></div></article>
     </section>
 
-    <section id="stages" class="view"><article class="panel"><div class="panel-head"><h2>Stage-wise production analysis</h2><span>Input, PASS, FAIL and first-pass yield for all six stages</span></div><div class="table-wrap"><table><thead><tr><th>Stage</th><th>Input / Tested</th><th>PASS</th><th>FAIL</th><th>Yield</th><th>Performance</th></tr></thead><tbody id="stageTable"></tbody></table></div></article></section>
+    <section id="stages" class="view"><article class="panel"><div class="panel-head"><h2>Stage-wise production analysis</h2><span>Input, PASS, FAIL and first-pass yield for all seven stages</span></div><div class="table-wrap"><table><thead><tr><th>Stage</th><th>Input / Tested</th><th>PASS</th><th>FAIL</th><th>Yield</th><th>Performance</th></tr></thead><tbody id="stageTable"></tbody></table></div></article></section>
 
-    <section id="stations" class="view"><article class="panel"><div class="panel-head"><h2>Station performance</h2><span>Volume and quality from writer, log collectors and verifier</span></div><div class="table-wrap"><table><thead><tr><th>Station</th><th>Total</th><th>PASS</th><th>FAIL</th><th>Yield</th><th>Last result</th></tr></thead><tbody id="stationTable"></tbody></table></div></article></section>
+    <section id="stations" class="view"><article class="panel"><div class="panel-head"><h2>Station performance</h2><span>Volume and quality from writer, log collectors, box build and verifier</span></div><div class="table-wrap"><table><thead><tr><th>Station</th><th>Total</th><th>PASS</th><th>FAIL</th><th>Yield</th><th>Last result</th></tr></thead><tbody id="stationTable"></tbody></table></div></article></section>
 
-    <section id="records" class="view"><article class="panel"><div class="panel-head"><h2>Latest stage records</h2><input id="search" placeholder="Search stage, MAC, serial, GPON, station or log file"></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Stage</th><th>MAC</th><th>Serial</th><th>GPON</th><th>Part</th><th>Station</th><th>Router IP</th><th>Source Log</th><th>Result</th><th>Detail</th></tr></thead><tbody id="recordsTable"></tbody></table></div></article></section>
+    <section id="records" class="view"><article class="panel"><div class="panel-head"><h2>Latest stage records</h2><input id="search" placeholder="Search stage, MAC, serial, GPON, PCB serial, station or log file"></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Stage</th><th>MAC</th><th>Serial</th><th>GPON</th><th>PCB Serial</th><th>Part</th><th>Station</th><th>Router IP</th><th>Source Log</th><th>Result</th><th>Detail</th></tr></thead><tbody id="recordsTable"></tbody></table></div></article></section>
+
+    <section id="traceability" class="view">
+      <article class="panel">
+        <div class="panel-head"><div><h2>Product traceability</h2><span>Search by MAC, Serial Number, GPON Serial Number or PCB Serial Number</span></div><div style="display:flex;gap:8px"><input id="traceQuery" placeholder="Scan or enter an identifier"><button id="traceSearch">Search</button></div></div>
+        <div id="traceIdentity" class="kpis"></div>
+        <div class="table-wrap"><table><thead><tr><th>Time</th><th>Stage</th><th>MAC</th><th>Serial</th><th>GPON</th><th>PCB Serial</th><th>Station</th><th>Result</th><th>Detail</th></tr></thead><tbody id="traceTable"><tr><td colspan="9" class="muted">Search an identifier to view its full production history.</td></tr></tbody></table></div>
+      </article>
+    </section>
   </main>
   <script>window.MES_REFRESH={{ refresh_seconds }};</script>
   <script src="/static/app.js"></script>

@@ -10,7 +10,18 @@
 # {GPON}              = generated GPON number
 #
 # The workbook states that prolinecmd changes require a reset.
-# Therefore the app writes and verifies first, then runs [FINALIZE].
+# When server firmware update is OFF, the app writes/verifies then runs [FINALIZE].
+# When firmware update is ON, [FINALIZE] is skipped because the firmware sysupgrade
+# is deliberately the LAST DUT STEP and automatically reboots the PCB.
+
+# ============================================================
+# SERVER-CONTROLLED FIRMWARE UPDATE
+# ============================================================
+# Firmware is not a CLI command in this file. v13.18 runs the supplied
+# automatic OpenWrt Python updater directly from mac_writer/firmware_updater.py.
+# The central server controls firmware file selection and ON/OFF.
+# Identity commands below run FIRST. If they verify successfully and firmware is ON,
+# firmware is written LAST; sysupgrade performs the final PCB reboot automatically.
 
 [WRITE]
 prolinecmd macaddr set {MAC_NOSEP}

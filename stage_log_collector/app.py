@@ -22,7 +22,7 @@ from tkinter import filedialog, messagebox, ttk
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.ini"
 DB_PATH = BASE_DIR / "collector.db"
-APP_VERSION = "13.0"
+APP_VERSION = "13.6"
 
 BRAND_DARK = "#185890"
 BRAND_BLUE = "#2898D0"

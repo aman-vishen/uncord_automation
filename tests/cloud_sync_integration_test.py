@@ -36,8 +36,24 @@ def main() -> None:
 
         server = load("server_test", ROOT / "server" / "server.py")
         db = server.MacDatabase(Path(td) / "factory.db")
-        db.import_macs(["14:D6:7C:00:00:01"])
-        allocation = db.allocate("WRITER-01/R1", "writer-request", "127.0.0.1")
+        db.import_identities([{
+            "mac":"14:D6:7C:00:00:01", "serial_number":"ZTEG00000001", "gpon_number":"ZTEG00000001"
+        }])
+        # Stages 1-2: Wi-Fi Calibration and Label Printing happen before Box Build.
+        db.report_stage_log_batch("LOG-COLLECTOR", [
+            {"event_id":"wifi-1","stage_name":"WIFI_CALIBRATION","station_id":"WIFI-CAL-01","status":"PASS","mac":"14:D6:7C:00:00:01","serial_number":"ZTEG00000001","source_file":"wifi.log","source_offset":1,"detail":"RF calibration pass","completed_at":server.now_iso()},
+            {"event_id":"label-1","stage_name":"LABEL_PRINTING","station_id":"LABEL-01","status":"PASS","mac":"14:D6:7C:00:00:01","serial_number":"ZTEG00000001","gpon_number":"ZTEG00000001","source_file":"label.csv","source_offset":1,"detail":"printed","completed_at":server.now_iso()},
+        ], "127.0.0.1")
+        # Stage 3: Box Build links PCB serial while the identity is still AVAILABLE.
+        db.bind_pcb_serial(
+            client_id="BOX-BUILD-01", event_id="box-1", mac="14:D6:7C:00:00:01",
+            serial_number="ZTEG00000001", gpon_number="ZTEG00000001",
+            pcb_serial_number="PCB00000001", raw_label="14:D6:7C:00:00:01,ZTEG00000001,ZTEG00000001",
+            client_ip="127.0.0.1",
+        )
+        # Stage 4: MAC Writer gate accepts only because PCB serial is now present.
+        allocation = db.allocate("WRITER-01/R1", "writer-request", "127.0.0.1", require_pcb_serial=True)
+        assert allocation["pcb_serial_number"] == "PCB00000001"
         db.report_result("WRITER-01/R1", allocation["reservation_id"], "PASS", "ok", "ZTEG00000001", "ZTEG00000001")
         check = db.begin_verification(
             client_id="VERIFY-01/R1", request_id="verify-request", mac=allocation["mac"],
@@ -51,9 +67,8 @@ def main() -> None:
             firmware_result="PASS", firmware_version="V1.0.1", led_result="PASS",
             reset_result="PASS", wps_result="PASS", user_mode_result="PASS", detail="all pass",
         )
+        # Stages 5-6: BOB Calibration and Wi-Fi Coupling & VoIP.
         db.report_stage_log_batch("LOG-COLLECTOR", [
-            {"event_id":"wifi-1","stage_name":"WIFI_CALIBRATION","station_id":"WIFI-CAL-01","status":"PASS","mac":allocation["mac"],"serial_number":"ZTEG00000001","source_file":"wifi.log","source_offset":1,"detail":"RF calibration pass","completed_at":server.now_iso()},
-            {"event_id":"label-1","stage_name":"LABEL_PRINTING","station_id":"LABEL-01","status":"PASS","mac":allocation["mac"],"serial_number":"ZTEG00000001","gpon_number":"ZTEG00000001","source_file":"label.csv","source_offset":1,"detail":"printed","completed_at":server.now_iso()},
             {"event_id":"bob-1","stage_name":"BOB_CALIBRATION","station_id":"BOB-01","status":"PASS","mac":allocation["mac"],"source_file":"bob.jsonl","source_offset":1,"detail":"optical pass","completed_at":server.now_iso()},
             {"event_id":"coupling-1","stage_name":"WIFI_COUPLING_VOIP","station_id":"COUPLING-01","status":"PASS","mac":allocation["mac"],"source_file":"coupling.log","source_offset":1,"detail":"Wi-Fi and VoIP pass","completed_at":server.now_iso()},
         ], "127.0.0.1")
@@ -64,16 +79,17 @@ def main() -> None:
             "CLOUD_REQUEST_TIMEOUT_SECONDS": "10",
         })
         status = worker.sync_once()
-        assert status["pending"] == 0 and status["synced"] == 6
+        assert status["pending"] == 0 and status["synced"] == 7
 
         token = base64.b64encode(b"admin:dashboard-test-key").decode()
         req = urllib.request.Request(cloud_url + "/api/dashboard", headers={"Authorization": "Basic " + token})
         dashboard = json.loads(urllib.request.urlopen(req).read())
         assert dashboard["kpi"]["writer_pass"] == 1
+        assert dashboard["kpi"]["line_input"] == 1
         assert dashboard["kpi"]["final_pass"] == 1
         assert [row["stage"] for row in dashboard["stages"]] == [
-            "1. MAC Write", "2. Wi-Fi Calibration", "3. Label Printing",
-            "4. BOB Calibration", "5. Wi-Fi Coupling & VoIP", "6. Verification",
+            "1. Wi-Fi Calibration", "2. Label Printing", "3. Box Build",
+            "4. MAC Write", "5. BOB Calibration", "6. Wi-Fi Coupling & VoIP", "7. Verification",
         ]
         assert all(row["pass"] == 1 for row in dashboard["stages"])
         cloud.shutdown()

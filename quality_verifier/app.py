@@ -30,7 +30,7 @@ try:
 except ImportError:
     zxingcpp = None
 
-APP_VERSION = "5.0-ETE-UNCORD-COMMANDS"
+APP_VERSION = "5.1-ETE-UNCORD-RESPONSIVE"
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.ini"
 PENDING_PATH = BASE_DIR / "pending_verifications.json"
@@ -488,10 +488,24 @@ class ServerClient:
         })
 
 
+def _telnet_text(value) -> str:
+    """Normalize telnetlib3 reader output to text.
+
+    TelnetReaderUnicode.read() returns str, while readuntil() is inherited
+    from the byte reader and therefore accepts/returns bytes. Supporting both
+    here keeps the application compatible across telnetlib3 releases.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 async def read_until(reader, prompt: str, timeout: float) -> str:
     if not prompt:
         await asyncio.sleep(0.2)
-        chunks = []
+        chunks: list[str] = []
         while True:
             try:
                 chunk = await asyncio.wait_for(reader.read(4096), timeout=0.15)
@@ -499,10 +513,15 @@ async def read_until(reader, prompt: str, timeout: float) -> str:
                 break
             if not chunk:
                 break
-            chunks.append(chunk)
+            chunks.append(_telnet_text(chunk))
         return "".join(chunks)
+
+    # telnetlib3's readuntil() searches its internal bytearray, so the
+    # separator must be bytes even when open_connection() uses Unicode mode.
+    separator = prompt.encode("utf-8")
     try:
-        return await asyncio.wait_for(reader.readuntil(prompt), timeout=timeout)
+        result = await asyncio.wait_for(reader.readuntil(separator), timeout=timeout)
+        return _telnet_text(result)
     except asyncio.TimeoutError as exc:
         raise AppError(f"Timed out waiting for prompt {prompt!r}") from exc
 
@@ -1034,7 +1053,17 @@ class VerifierApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("ETE Solutions India | 8-Router Calibration & Quality Verification Station")
-        self.geometry("1500x940"); self.minsize(1180,760); self.configure(bg="#DDE6F5")
+        # Fit the application to the operator's display instead of forcing a 1500x940
+        # window.  This is important on the common 1366x768 production monitors.
+        screen_w = max(1024, self.winfo_screenwidth())
+        screen_h = max(700, self.winfo_screenheight())
+        win_w = min(1500, max(1040, screen_w - 40))
+        win_h = min(940, max(650, screen_h - 80))
+        pos_x = max(0, (screen_w - win_w) // 2)
+        pos_y = max(0, (screen_h - win_h) // 2)
+        self.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
+        self.minsize(min(1040, max(900, screen_w - 100)), min(650, max(600, screen_h - 120)))
+        self.configure(bg="#DDE6F5")
         self.events: queue.Queue = queue.Queue(); self.cfg=load_config(CONFIG_PATH); self.server=ServerClient(self.cfg)
         self.cards: dict[str,SlotCard]={}; self.brand_logo=None
         self.camera_stop = threading.Event(); self.camera_running = False; self.camera_target_slot = ""
@@ -1208,13 +1237,81 @@ class VerifierApp(tk.Tk):
                   activebackground="#EDF2FA", relief="flat", bd=0, cursor="hand2",
                   font=("Segoe UI", 8, "bold"), padx=11, pady=6).grid(row=0, column=1, rowspan=2, sticky="e")
 
-        body = tk.Frame(dash, bg="#F5F7FB")
-        body.grid(row=2, column=0, sticky="nsew", padx=18, pady=(0, 16))
-        body.grid_columnconfigure(0, weight=1)
-        body.grid_columnconfigure(1, weight=1)
-        body.grid_rowconfigure(0, weight=1)
+        # Responsive router area. The previous fixed two-column layout could be clipped
+        # or appear unresponsive on 1366x768 production monitors because the four large
+        # router rows had no scrolling and the right-hand controls could fall outside
+        # the visible area. This canvas scrolls vertically and automatically stacks the
+        # two router panels when the available width is too small.
+        router_host = tk.Frame(dash, bg="#F5F7FB")
+        router_host.grid(row=2, column=0, sticky="nsew", padx=18, pady=(0, 16))
+        router_host.grid_rowconfigure(0, weight=1)
+        router_host.grid_columnconfigure(0, weight=1)
 
-        # Two dashboard panels, four router rows each.
+        self.router_canvas = tk.Canvas(router_host, bg="#F5F7FB", highlightthickness=0, bd=0)
+        router_scrollbar = tk.Scrollbar(router_host, orient="vertical", command=self.router_canvas.yview)
+        self.router_canvas.configure(yscrollcommand=router_scrollbar.set)
+        self.router_canvas.grid(row=0, column=0, sticky="nsew")
+        router_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+
+        body = tk.Frame(self.router_canvas, bg="#F5F7FB")
+        self.router_canvas_window = self.router_canvas.create_window((0, 0), window=body, anchor="nw")
+        self.router_body = body
+        self.router_panel_frames = []
+
+        def update_scrollregion(_event=None):
+            self.router_canvas.configure(scrollregion=self.router_canvas.bbox("all"))
+
+        def update_router_layout(event=None):
+            width = event.width if event is not None else self.router_canvas.winfo_width()
+            width = max(1, int(width))
+            self.router_canvas.itemconfigure(self.router_canvas_window, width=width)
+            stacked = width < 1060
+            if getattr(self, "_router_panels_stacked", None) == stacked and self.router_panel_frames:
+                update_scrollregion()
+                return
+            self._router_panels_stacked = stacked
+            if stacked:
+                body.grid_columnconfigure(0, weight=1)
+                body.grid_columnconfigure(1, weight=0)
+                for idx, panel in enumerate(self.router_panel_frames):
+                    panel.grid_configure(row=idx, column=0, sticky="nsew", padx=0,
+                                         pady=(0, 10 if idx == 0 else 0))
+            else:
+                body.grid_columnconfigure(0, weight=1, uniform="routerpanels")
+                body.grid_columnconfigure(1, weight=1, uniform="routerpanels")
+                for idx, panel in enumerate(self.router_panel_frames):
+                    panel.grid_configure(row=0, column=idx, sticky="nsew",
+                                         padx=(0, 6) if idx == 0 else (6, 0), pady=0)
+            update_scrollregion()
+
+        def mousewheel(event):
+            if getattr(event, "delta", 0):
+                self.router_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif getattr(event, "num", 0) == 4:
+                self.router_canvas.yview_scroll(-1, "units")
+            elif getattr(event, "num", 0) == 5:
+                self.router_canvas.yview_scroll(1, "units")
+            return "break"
+
+        def bind_router_wheel(_event=None):
+            self.bind_all("<MouseWheel>", mousewheel)
+            self.bind_all("<Button-4>", mousewheel)
+            self.bind_all("<Button-5>", mousewheel)
+
+        def unbind_router_wheel(_event=None):
+            self.unbind_all("<MouseWheel>")
+            self.unbind_all("<Button-4>")
+            self.unbind_all("<Button-5>")
+
+        body.bind("<Configure>", update_scrollregion)
+        self.router_canvas.bind("<Configure>", update_router_layout)
+        self.router_canvas.bind("<Enter>", bind_router_wheel)
+        self.router_canvas.bind("<Leave>", unbind_router_wheel)
+        body.bind("<Enter>", bind_router_wheel)
+        body.bind("<Leave>", unbind_router_wheel)
+
+        # Two logical panels, four router rows each. They stay side-by-side on a wide
+        # monitor and become one full-width panel after another on smaller screens.
         panels = []
         for col, title in enumerate(("Routers 01–04", "Routers 05–08")):
             panel = tk.Frame(body, bg="#FFFFFF", highlightthickness=1, highlightbackground="#E6EAF1")
@@ -1227,6 +1324,7 @@ class VerifierApp(tk.Tk):
             holder.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
             holder.grid_columnconfigure(0, weight=1)
             panel.grid_rowconfigure(2, weight=1)
+            self.router_panel_frames.append(panel)
             panels.append(holder)
 
         for idx, router in enumerate(self.cfg.routers):
@@ -1234,6 +1332,9 @@ class VerifierApp(tk.Tk):
             row_idx = idx if idx < 4 else idx - 4
             card = SlotCard(self, panels[panel_idx], router, row_idx, 0)
             self.cards[router.key] = card
+
+        # Apply a first responsive pass after all cards exist.
+        self.after_idle(update_router_layout)
 
         # PROCESS LOG PAGE
         self.log_page.grid_columnconfigure(0, weight=1)

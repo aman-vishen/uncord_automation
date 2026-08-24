@@ -46,19 +46,19 @@ def safe_rate(num: int, den: int) -> float: return round((num / den * 100.0), 2)
 def dashboard_data(start: str, end: str) -> dict[str, Any]:
     with connect() as con:
         writer_rows = con.execute(
-            f"""SELECT completed_at,'MAC Write' stage,mac,serial_number,gpon_number,'' part_number,
+            f"""SELECT completed_at,'MAC Write' stage,mac,serial_number,gpon_number,pcb_serial_number,'' part_number,
                 client_id,'' router_ip,state status,'' source_file,result_detail detail
                 FROM mac_pool WHERE completed_at IS NOT NULL AND {day_expr('completed_at')} BETWEEN ? AND ?""",
             (start, end),
         ).fetchall()
         verifier_rows = con.execute(
-            f"""SELECT completed_at,'Verification' stage,mac,serial_number,gpon_number,part_number,
+            f"""SELECT completed_at,'Verification' stage,mac,serial_number,gpon_number,pcb_serial_number,part_number,
                 client_id,router_ip,status,'' source_file,detail
                 FROM verification_history WHERE completed_at IS NOT NULL AND {day_expr('completed_at')} BETWEEN ? AND ?""",
             (start, end),
         ).fetchall()
         stage_rows = con.execute(
-            f"""SELECT completed_at,stage_name stage,mac,serial_number,gpon_number,part_number,
+            f"""SELECT completed_at,stage_name stage,mac,serial_number,gpon_number,pcb_serial_number,part_number,
                 station_id client_id,'' router_ip,status,source_file,detail
                 FROM stage_log_history WHERE {day_expr('completed_at')} BETWEEN ? AND ?""",
             (start, end),
@@ -68,16 +68,16 @@ def dashboard_data(start: str, end: str) -> dict[str, Any]:
     all_rows = [dict(r) for r in writer_rows] + [dict(r) for r in stage_rows] + [dict(r) for r in verifier_rows]
     display = {
         'WIFI_CALIBRATION': 'Wi-Fi Calibration', 'LABEL_PRINTING': 'Label Printing',
-        'BOB_CALIBRATION': 'BOB Calibration', 'WIFI_COUPLING_VOIP': 'Wi-Fi Coupling & VoIP',
+        'BOB_CALIBRATION': 'BOB Calibration', 'WIFI_COUPLING_VOIP': 'Wi-Fi Coupling & VoIP', 'BOX_BUILD': 'Box Build',
     }
     for row in all_rows: row['stage'] = display.get(row['stage'], row['stage'])
-    ordered = ['MAC Write','Wi-Fi Calibration','Label Printing','BOB Calibration','Wi-Fi Coupling & VoIP','Verification']
+    ordered = ['Wi-Fi Calibration','Label Printing','Box Build','MAC Write','BOB Calibration','Wi-Fi Coupling & VoIP','Verification']
     stages=[]
     for idx,label in enumerate(ordered,1):
         rows=[r for r in all_rows if r['stage']==label]
         p=sum(r['status']=='PASS' for r in rows); f=sum(r['status'] in ('FAIL','ERROR') for r in rows); t=p+f
         stages.append({'stage':f'{idx}. {label}','pass':p,'fail':f,'tested':t,'yield':safe_rate(p,t)})
-    writer_total=stages[0]['tested']; verifier_total=stages[-1]['tested']; vp=stages[-1]['pass']; vf=stages[-1]['fail']
+    wifi_total=stages[0]['tested']; writer_stage=stages[3]; writer_total=writer_stage['tested']; verifier_total=stages[-1]['tested']; vp=stages[-1]['pass']; vf=stages[-1]['fail']
     daily_map={}
     for r in all_rows:
         if r['stage']!='Verification': continue
@@ -90,8 +90,31 @@ def dashboard_data(start: str, end: str) -> dict[str, Any]:
     stations=[]
     for item in station_map.values(): item['yield']=safe_rate(item['pass'],item['total']); stations.append(item)
     recent=sorted(all_rows,key=lambda r:str(r['completed_at']),reverse=True)[:200]
-    return {'range':{'start':start,'end':end},'kpi':{'production_volume':verifier_total,'line_input':writer_total,'final_pass':vp,'final_fail':vf,'final_yield':safe_rate(vp,verifier_total),'writer_pass':stages[0]['pass'],'writer_fail':stages[0]['fail'],'wip':max(0,writer_total-verifier_total),'available_macs':int(pool.get('AVAILABLE',0)),'reserved_macs':int(pool.get('RESERVED',0))},'daily':[daily_map[k] for k in sorted(daily_map)],'stages':stages,'stations':sorted(stations,key=lambda x:(-x['total'],x['client_id'])),'recent':recent,'refresh_seconds':REFRESH_SECONDS}
+    return {'range':{'start':start,'end':end},'kpi':{'production_volume':verifier_total,'line_input':wifi_total,'final_pass':vp,'final_fail':vf,'final_yield':safe_rate(vp,verifier_total),'writer_pass':writer_stage['pass'],'writer_fail':writer_stage['fail'],'wip':max(0,wifi_total-verifier_total),'available_macs':int(pool.get('AVAILABLE',0)),'reserved_macs':int(pool.get('RESERVED',0))},'daily':[daily_map[k] for k in sorted(daily_map)],'stages':stages,'stations':sorted(stations,key=lambda x:(-x['total'],x['client_id'])),'recent':recent,'refresh_seconds':REFRESH_SECONDS}
 
+
+
+def traceability_data(q: str) -> dict[str, Any]:
+    q=(q or '').strip()
+    if not q: return {'found':False,'identity':{},'history':[]}
+    compact=''.join(ch for ch in q.upper() if ch.isalnum())
+    with connect() as con:
+        match=con.execute(
+            """SELECT mac,serial_number,gpon_number,pcb_serial_number FROM mac_pool WHERE
+               UPPER(mac)=UPPER(?) OR UPPER(mac)=UPPER(?) OR UPPER(COALESCE(serial_number,''))=UPPER(?) OR
+               UPPER(COALESCE(gpon_number,''))=UPPER(?) OR UPPER(COALESCE(pcb_serial_number,''))=UPPER(?) LIMIT 1""",
+            (compact, q, q, q, q),
+        ).fetchone()
+        if not match: return {'found':False,'identity':{},'history':[]}
+        mac=match['mac']
+        writer=[dict(r) for r in con.execute("SELECT completed_at,'MAC Write' stage,mac,serial_number,gpon_number,pcb_serial_number,'' part_number,client_id station_id,state status,result_detail detail FROM mac_pool WHERE mac=? AND completed_at IS NOT NULL",(mac,)).fetchall()]
+        stages=[dict(r) for r in con.execute("SELECT completed_at,stage_name stage,mac,serial_number,gpon_number,pcb_serial_number,part_number,station_id,status,detail FROM stage_log_history WHERE mac=? ORDER BY completed_at",(mac,)).fetchall()]
+        verify=[dict(r) for r in con.execute("SELECT completed_at,'Verification' stage,mac,serial_number,gpon_number,pcb_serial_number,part_number,client_id station_id,status,detail FROM verification_history WHERE mac=? AND completed_at IS NOT NULL ORDER BY completed_at",(mac,)).fetchall()]
+    display={'WIFI_CALIBRATION':'Wi-Fi Calibration','LABEL_PRINTING':'Label Printing','BOB_CALIBRATION':'BOB Calibration','WIFI_COUPLING_VOIP':'Wi-Fi Coupling & VoIP','BOX_BUILD':'Box Build'}
+    history=writer+stages+verify
+    for r in history: r['stage']=display.get(r['stage'],r['stage'])
+    history=sorted(history,key=lambda r:str(r.get('completed_at') or ''))
+    return {'found':True,'identity':{'mac':':'.join(mac[i:i+2] for i in range(0,12,2)),'serial_number':match['serial_number'] or '','gpon_number':match['gpon_number'] or '','pcb_serial_number':match['pcb_serial_number'] or ''},'history':history}
 
 class Handler(BaseHTTPRequestHandler):
     def send_bytes(self, data: bytes, content_type: str, status: int=200, headers: dict[str,str]|None=None):
@@ -105,12 +128,14 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/health':
                 with connect() as con: con.execute('SELECT 1').fetchone()
                 return self.send_json({'ok':True,'database':str(DB_PATH)})
+            if path=='/api/traceability':
+                return self.send_json({'ok':True,**traceability_data(query.get('q',[''])[0])})
             if path=='/api/dashboard':
                 s,e=parse_range(query); return self.send_json(dashboard_data(s,e))
             if path in {'/export/verification.csv','/export/production.csv'}:
                 s,e=parse_range(query)
                 data=dashboard_data(s,e); rows=data['recent']
-                out=io.StringIO(); w=csv.DictWriter(out,fieldnames=['completed_at','stage','mac','serial_number','gpon_number','part_number','client_id','router_ip','source_file','status','detail'])
+                out=io.StringIO(); w=csv.DictWriter(out,fieldnames=['completed_at','stage','mac','serial_number','gpon_number','pcb_serial_number','part_number','client_id','router_ip','source_file','status','detail'])
                 w.writeheader(); w.writerows(rows)
                 return self.send_bytes(out.getvalue().encode(),'text/csv; charset=utf-8',headers={'Content-Disposition':f'attachment; filename=production_{s}_to_{e}.csv'})
             if path=='/': file=BASE_DIR/'templates'/'index.html'

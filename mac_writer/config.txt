@@ -1,81 +1,133 @@
 # ============================================================
-# PRODUCT / COMMAND PROFILE
-PRODUCT_MODEL=AX3000
-COMMAND_SOURCE=UNCORD_Router_Command_Template.xlsx
-
-# CENTRAL MAC SERVER
+# ETE SOLUTIONS INDIA - 8 DUT MAC WRITER CONFIG
+# All routers use the SAME DUT IP: 192.168.2.1
+# Each DUT is identified by the STATIC IP of its dedicated PC NIC.
+#
+# Windows 11 NIC setup:
+#   DUT1 NIC -> 192.168.2.101 / 255.255.255.0
+#   DUT2 NIC -> 192.168.2.102 / 255.255.255.0
+#   DUT3 NIC -> 192.168.2.103 / 255.255.255.0
+#   DUT4 NIC -> 192.168.2.104 / 255.255.255.0
+#   DUT5 NIC -> 192.168.2.105 / 255.255.255.0
+#   DUT6 NIC -> 192.168.2.106 / 255.255.255.0
+#   DUT7 NIC -> 192.168.2.107 / 255.255.255.0
+#   DUT8 NIC -> 192.168.2.108 / 255.255.255.0
+#
+# Leave DEFAULT GATEWAY blank on these 8 DUT NICs.
 # ============================================================
-SERVER_URL=http://192.168.20.10:8765
-SERVER_API_KEY=change-this-key
-STATION_ID=LINE1-STATION1
-SERVER_TIMEOUT=5
 
-# ============================================================
-# ROUTERS CONNECTED THROUGH THE MANAGED SWITCH
-# Add/change each router IP here. Disabled slots are ignored.
-# All enabled router IPs must be unique and reachable from this PC.
-# ============================================================
-ROUTER_COUNT=8
+ROUTER_COUNT = 8
 
-ROUTER_1_ENABLED=1
-ROUTER_1_NAME=Router 1
-ROUTER_1_IP=192.168.20.101
+PORT = 23
+USERNAME = admin
+PASSWORD = admin
+LOGIN_PROMPT = login:
+PASSWORD_PROMPT = Password:
+COMMAND_PROMPT = #
+TIMEOUT = 10
+COMMAND_DELAY = 0.30
+PING_TIMEOUT = 1.5
 
-ROUTER_2_ENABLED=1
-ROUTER_2_NAME=Router 2
-ROUTER_2_IP=192.168.20.102
-
-ROUTER_3_ENABLED=1
-ROUTER_3_NAME=Router 3
-ROUTER_3_IP=192.168.20.103
-
-ROUTER_4_ENABLED=1
-ROUTER_4_NAME=Router 4
-ROUTER_4_IP=192.168.20.104
-
-ROUTER_5_ENABLED=1
-ROUTER_5_NAME=Router 5
-ROUTER_5_IP=192.168.20.105
-
-ROUTER_6_ENABLED=1
-ROUTER_6_NAME=Router 6
-ROUTER_6_IP=192.168.20.106
-
-ROUTER_7_ENABLED=1
-ROUTER_7_NAME=Router 7
-ROUTER_7_IP=192.168.20.107
-
-ROUTER_8_ENABLED=1
-ROUTER_8_NAME=Router 8
-ROUTER_8_IP=192.168.20.108
+SERVER_URL = http://192.168.20.10:8765
+SERVER_API_KEY = change-this-key
+STATION_ID = LINE1-MAC1
+SERVER_TIMEOUT = 5
 
 # ============================================================
-# DEFAULT TELNET SETTINGS - used by all router slots
-# A slot can override any setting, e.g. ROUTER_3_PORT=2323
-# or ROUTER_3_USERNAME=root
+# LABEL SCAN + AUTOMATIC START
+# Operator may scan ONE of: MAC, hardware Serial Number, GPON Serial Number.
+# The server resolves the scan to the complete identity row.
+# 1 = label scan is mandatory before programming.
+# 0 = legacy next-available allocation is allowed.
 # ============================================================
-PORT=23
-USERNAME=admin
-PASSWORD=admin
-LOGIN_PROMPT=login:
-PASSWORD_PROMPT=Password:
-COMMAND_PROMPT=#
-TIMEOUT=10
-COMMAND_DELAY=0.3
+REQUIRE_LABEL_SCAN_BEFORE_WRITE = 1
+AUTO_START_AFTER_SCAN = 1
+PCB_READY_WAIT_SECONDS = 60
+PCB_READY_POLL_SECONDS = 0.5
 
-# Optional connection check timeout before programming
-PING_TIMEOUT=1.5
+# This command is always sent immediately after Telnet login and before
+# any MAC / Serial / GPON write or read command.
+PRE_WRITE_COMMAND = prolinecmd clearall
 
 # ============================================================
-# SERIAL NUMBER AND GPON NUMBER GENERATION
-# Values are generated from the unique sequence returned by the server.
-# Available template placeholders:
-# {SEQ}, {SEQ_PAD6}, {SEQ_PAD8}, {SEQ_PAD10}, {SEQ_HEX6}, {SEQ_HEX8}
-# {MAC}, {MAC_NOSEP}, {MAC_LAST6}, {MAC_LAST8}
-# The supplied workbook shows ZTEG + 8 hexadecimal characters for both
-# hardware serial number and GPON number. Confirm this vendor prefix before production.
+# SERVER-CONTROLLED FIRMWARE UPDATE / DIRECT PYTHON SSH/SFTP
 # ============================================================
-SERIAL_TEMPLATE=ZTEG{SEQ_HEX8}
-GPON_TEMPLATE=ZTEG{SEQ_HEX8}
-SERIAL_VALID_REGEX=^[A-Za-z0-9._/-]{4,64}$
-GPON_VALID_REGEX=^[A-Za-z0-9._/-]{4,64}$
+# Firmware image + ON/OFF are controlled by the CENTRAL SERVER.
+# MAC Writer downloads and SHA-256 verifies the selected image, then uses the
+# supplied Python updater flow directly: SSH -> SFTP -> sysupgrade -T ->
+# sysupgrade -> automatic reboot -> SSH verify. Firmware is the LAST DUT step.
+# No external mcupgrade CLI is required.
+# Every SSH socket is bound to ROUTER_n_SOURCE_IP so all 8 DUTs may use 192.168.2.1.
+FIRMWARE_SSH_PORT = 22
+FIRMWARE_SSH_USERNAME = admin
+FIRMWARE_SSH_PASSWORD = admin
+FIRMWARE_REMOTE_PATH = /tmp/automatic_firmware.bin
+
+# 0 = preserve OpenWrt configuration (normal sysupgrade).
+# 1 = run sysupgrade -n and intentionally erase configuration.
+FIRMWARE_ERASE_CONFIG = 0
+
+# Optional post-upgrade text check. Leave blank to only require successful reboot + SSH health check.
+FIRMWARE_EXPECTED_VERSION =
+
+FIRMWARE_CONNECT_TIMEOUT_SECONDS = 10
+FIRMWARE_VALIDATE_TIMEOUT_SECONDS = 120
+FIRMWARE_DOWN_TIMEOUT_SECONDS = 90
+FIRMWARE_REBOOT_TIMEOUT_SECONDS = 300
+FIRMWARE_POLL_SECONDS = 3
+
+# After the updater verifies SSH, MAC Write waits for production Telnet too.
+
+REQUIRE_SERVER_IDENTIFIERS = 1
+
+# ============================================================
+# BOX BUILD / PCB SERIAL GATE
+# 1 = Before MAC Write, central server must find PCB Serial Number
+#     linked to the identity row by the Box Build station.
+#     If PCB Serial Number is blank, this DUT is blocked and nothing is written.
+# 0 = Disable this check and allow MAC Write without PCB Serial Number.
+# ============================================================
+REQUIRE_PCB_SERIAL_BEFORE_WRITE = 1
+
+SERIAL_VALID_REGEX = ^[A-Za-z0-9._/-]{4,64}$
+GPON_VALID_REGEX = ^[A-Za-z0-9._/-]{4,64}$
+
+ROUTER_1_ENABLED = 1
+ROUTER_1_NAME = DUT 1
+ROUTER_1_IP = 192.168.2.1
+ROUTER_1_SOURCE_IP = 192.168.2.101
+
+ROUTER_2_ENABLED = 1
+ROUTER_2_NAME = DUT 2
+ROUTER_2_IP = 192.168.2.1
+ROUTER_2_SOURCE_IP = 192.168.2.102
+
+ROUTER_3_ENABLED = 1
+ROUTER_3_NAME = DUT 3
+ROUTER_3_IP = 192.168.2.1
+ROUTER_3_SOURCE_IP = 192.168.2.103
+
+ROUTER_4_ENABLED = 1
+ROUTER_4_NAME = DUT 4
+ROUTER_4_IP = 192.168.2.1
+ROUTER_4_SOURCE_IP = 192.168.2.104
+
+ROUTER_5_ENABLED = 1
+ROUTER_5_NAME = DUT 5
+ROUTER_5_IP = 192.168.2.1
+ROUTER_5_SOURCE_IP = 192.168.2.105
+
+ROUTER_6_ENABLED = 1
+ROUTER_6_NAME = DUT 6
+ROUTER_6_IP = 192.168.2.1
+ROUTER_6_SOURCE_IP = 192.168.2.106
+
+ROUTER_7_ENABLED = 1
+ROUTER_7_NAME = DUT 7
+ROUTER_7_IP = 192.168.2.1
+ROUTER_7_SOURCE_IP = 192.168.2.107
+
+ROUTER_8_ENABLED = 1
+ROUTER_8_NAME = DUT 8
+ROUTER_8_IP = 192.168.2.1
+ROUTER_8_SOURCE_IP = 192.168.2.108
