@@ -1,62 +1,84 @@
-# Uncord Automation v13.7 — Corrected Seven-Stage Production Flow
+# Uncord Automation v13.61 — Current Production Flow
 
-ETE Solutions India router production automation suite with local production continuity, PCB traceability and Render-hosted MES analytics.
+ETE Solutions India router/ONT production automation suite with local factory execution, identity traceability, offline-tolerant cloud synchronization and Cloud MES analytics.
 
-## Correct production flow
+## Current production flow
 
-The MES and documentation now use this exact order:
+1. **Wi-Fi Calibration**
+   - Stage log collector records PASS/FAIL.
+   - X31 final verification uses the calibrated E2P locations captured from the production calibration log.
 
-1. **Wi-Fi Calibration** — collected from the Wi-Fi calibration station log.
-2. **Label Printing** — collected from the label-printing station log.
-3. **Box Build** — operator scans the printed product label and PCB Serial Number. The server links the PCB serial to the matching MAC + Serial + GPON identity row.
-4. **MAC Write** — writes MAC, Serial Number and GPON Serial Number to the board. With `REQUIRE_PCB_SERIAL_BEFORE_WRITE=1`, writing is blocked unless Box Build already added the PCB Serial Number.
-5. **BOB Calibration** — collected from the BOB calibration station log.
-6. **Wi-Fi Coupling & VoIP** — collected from the coupling/VoIP station log.
-7. **Verification** — final quality verification.
+2. **Label Printing + PCB Link**
+   - Central Server imports **MAC + GPON Serial Number only**.
+   - Label Printing generates the product Serial Number from the live date.
+   - Year encoding starts at **2026=A, 2027=B, 2028=C ...**
+   - PCB Serial Number is linked during label printing.
 
-## Identity traceability
+3. **MAC Write + Firmware Upgrade**
+   - MAC Writer scans/loads the linked identity.
+   - Writes MAC, generated Serial Number and GPON Serial Number.
+   - Verifies the programmed identity.
+   - Downloads the Central Server-selected firmware, validates SHA256, runs firmware validation/upgrade, waits for reboot and only then reports PASS.
 
-Each server identity row contains:
+4. **BOB Calibration**
+   - Required for GPON models.
+   - Skipped for router-only models.
 
-```text
-MAC
-Serial Number
-GPON Serial Number
-PCB Serial Number
-```
+5. **Wi-Fi Coupling & VoIP**
+   - Remains one combined production stage: `WIFI_COUPLING_VOIP`.
+   - The collector supports date subfolders followed by `SUCCESS` / `FAIL`.
+   - MAC is parsed from the beginning of the log filename.
+   - VoIP is ignored for models where VoIP is disabled.
 
-Wi-Fi Calibration and Label Printing occur before Box Build. Box Build scans the printed label, validates its MAC/Serial/GPON against the server identity list, then permanently links the PCB Serial Number. MAC Write can then require that PCB link before programming the board.
+6. **Final Verification**
+   - Validates identity and all required previous stages.
+   - Checks Wi-Fi calibration memory / E2P data.
+   - Checks BOB calibration data for applicable models.
+   - Runs LED and WPS tests.
+   - Verifies the firmware installed by MAC Write.
+   - Switches and confirms user mode.
+   - **Reset-button testing is no longer part of Final Verification.**
 
-## MAC Writer PCB gate
+## Removed stage
 
-In `mac_writer/config.txt`:
+**Box Build has been removed from the production flow and is no longer a dependency for MAC Write.**
 
-```ini
-REQUIRE_PCB_SERIAL_BEFORE_WRITE=1
-```
+PCB traceability is established during **Label Printing + PCB Link** instead.
 
-- `1` — require a PCB Serial Number before reserving/writing the next identity.
-- `0` — disable the gate and allow MAC Write when PCB Serial Number is blank.
+## Model rules
 
-When the gate is enabled and the next identity has no PCB Serial Number, the Writer stops before programming and shows:
+- `AC1200-X13` / `AC3000-X31` — GPON + VoIP: BOB + Wi-Fi Coupling & VoIP.
+- `AC1200-X12` / `AC3000-X30` — GPON: BOB + Wi-Fi Coupling; VoIP disabled.
+- `AC1200-R12` / `AC3000-R30` — Router: no BOB; Wi-Fi Coupling; VoIP disabled.
 
-```text
-NO PCB SERIAL NUMBER PRESENT — Complete Box Build before MAC Write. MAC was not written.
-```
+## Cloud MES v13.61
 
-## Applications
+The Cloud MES follows the six-stage flow above and provides:
 
-- `server/` — identity pool, PCB traceability, production history and cloud synchronization.
-- `stage_log_collector/` — monitors Wi-Fi Calibration, Label Printing, BOB Calibration and Wi-Fi Coupling & VoIP logs.
-- `box_build/` — scans product label + PCB serial and links them on the server.
-- `mac_writer/` — eight-router MAC/Serial/GPON writer with optional PCB gate.
-- `quality_verifier/` — eight-router final verification.
-- `mes_dashboard/` — Render cloud MES and traceability dashboard.
+- Date-range and model filtering.
+- Line input, finished output, Final FPY, MAC Write FPY, WIP, retest count/rate, current UPH and MAC-pool status.
+- Six-stage live process visualization.
+- Daily finished-production trend.
+- Hourly output visualization with optional `TARGET_UPH` comparison.
+- Stage FPY analysis.
+- Failure Pareto.
+- WIP funnel.
+- Station volume / yield comparison.
+- Production records with firmware information.
+- MAC / Serial / GPON / PCB traceability.
+- Automated production exception insights.
 
-## Factory connection
+Set `TARGET_UPH` in the Cloud MES environment when an explicit production target should be displayed.
 
-Writer, Verifier, Stage Log Collector and Box Build all connect to the local Central Server. The Central Server synchronizes results to Render over HTTPS.
+The MES intentionally keeps advanced analytics in the **Cloud MES**, while the local Central Server remains focused on production execution, identity/model control, stage validation, firmware control, SQLite/offline continuity and cloud synchronization.
 
-The MES Line Input now uses **Wi-Fi Calibration** volume, and estimated WIP is calculated from Wi-Fi Calibration input minus final Verification output.
+## Main applications
 
-Before upgrading, back up `server/mac_server.db`. Keep production passwords, API keys and database files out of GitHub.
+- `server/` — Central production identity, model control, stage validation, firmware selection and cloud synchronization.
+- `label_printing/` — Serial generation, PCB linking and label printing.
+- `stage_log_collector/` — Wi-Fi Calibration, BOB Calibration and Wi-Fi Coupling & VoIP log collection.
+- `mac_writer/` — eight-DUT identity writer and firmware-upgrade stage.
+- `quality_verifier/` — final verification.
+- `mes_dashboard/` — Cloud MES, traceability and production analytics.
+
+Before replacing production server files, back up `server/mac_server.db`. Keep production passwords, API keys and database files out of GitHub.
