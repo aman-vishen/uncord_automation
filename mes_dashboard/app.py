@@ -31,6 +31,7 @@ INGEST_API_KEY = os.environ.get("INGEST_API_KEY", "").strip()
 DASHBOARD_USERNAME = os.environ.get("DASHBOARD_USERNAME", "admin").strip()
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
 REFRESH_SECONDS = max(5, int(os.environ.get("REFRESH_SECONDS", "10")))
+TARGET_UPH = max(0, int(os.environ.get("TARGET_UPH", "0") or 0))
 MAX_BATCH_SIZE = max(1, min(1000, int(os.environ.get("MAX_BATCH_SIZE", "500"))))
 MAX_BODY_BYTES = 5 * 1024 * 1024
 HOST = "0.0.0.0"
@@ -290,7 +291,7 @@ def validate_event(raw: Any, postgres: bool) -> dict[str, Any]:
     if event_type != "MAC_POOL_SNAPSHOT" and status not in {"PASS", "FAIL", "ERROR"}:
         raise ValueError("status must be PASS, FAIL, or ERROR")
     stage_name = normalize_text(raw.get("stage_name"), 100).upper()
-    allowed_stages = {"WIFI_CALIBRATION", "LABEL_PRINTING", "BOB_CALIBRATION", "WIFI_COUPLING_VOIP", "BOX_BUILD"}
+    allowed_stages = {"WIFI_CALIBRATION", "LABEL_PRINTING", "BOB_CALIBRATION", "WIFI_COUPLING_VOIP"}
     if event_type == "STAGE_LOG_RESULT" and stage_name not in allowed_stages:
         raise ValueError("Unsupported or missing stage_name")
     if event_type == "MAC_POOL_SNAPSHOT":
@@ -344,20 +345,37 @@ def parse_range(query: dict[str, list[str]]) -> tuple[date, date]:
     return start, end
 
 
+def event_model(e: dict[str, Any]) -> str:
+    payload = decode_payload(e.get("payload_json"))
+    for key in ("model", "selected_model", "product_model", "model_name"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return str(e.get("part_number") or "").strip() or "UNKNOWN"
+
+
 def display_event_stage(e: dict[str, Any]) -> str:
     if e.get("event_type") == "IDENTITY_WRITER_RESULT":
-        return "MAC Write"
+        return "MAC Write + Firmware"
     if e.get("event_type") == "QUALITY_VERIFICATION_RESULT":
-        return "Verification"
+        return "Final Verification"
     return {
-        "WIFI_CALIBRATION": "Wi-Fi Calibration", "LABEL_PRINTING": "Label Printing",
-        "BOB_CALIBRATION": "BOB Calibration", "WIFI_COUPLING_VOIP": "Wi-Fi Coupling & VoIP",
-        "BOX_BUILD": "Box Build",
+        "WIFI_CALIBRATION": "Wi-Fi Calibration",
+        "LABEL_PRINTING": "Label Printing + PCB Link",
+        "BOB_CALIBRATION": "BOB Calibration",
+        "WIFI_COUPLING_VOIP": "Wi-Fi Coupling & VoIP",
     }.get(e.get("stage_name") or "", e.get("stage_name") or "Production Stage")
 
 
-def dashboard_data(start: date, end: date) -> dict[str, Any]:
-    events = db.events_between(start, end)
+def dashboard_data(start: date, end: date, model_filter: str = "") -> dict[str, Any]:
+    all_events = db.events_between(start, end)
+    production_all = [e for e in all_events if e["event_type"] != "MAC_POOL_SNAPSHOT"]
+    models = sorted({event_model(e) for e in production_all if event_model(e) != "UNKNOWN"})
+    selected_model = normalize_text(model_filter, 250)
+    events = all_events
+    if selected_model:
+        events = [e for e in all_events if e["event_type"] == "MAC_POOL_SNAPSHOT" or event_model(e).upper() == selected_model.upper()]
+
     writer = [e for e in events if e["event_type"] == "IDENTITY_WRITER_RESULT"]
     verifier = [e for e in events if e["event_type"] == "QUALITY_VERIFICATION_RESULT"]
     stage_logs = [e for e in events if e["event_type"] == "STAGE_LOG_RESULT"]
@@ -372,32 +390,41 @@ def dashboard_data(start: date, end: date) -> dict[str, Any]:
 
     wifi_calibration = [e for e in stage_logs if e.get("stage_name") == "WIFI_CALIBRATION"]
     label_printing = [e for e in stage_logs if e.get("stage_name") == "LABEL_PRINTING"]
-    box_build = [e for e in stage_logs if e.get("stage_name") == "BOX_BUILD"]
     bob_calibration = [e for e in stage_logs if e.get("stage_name") == "BOB_CALIBRATION"]
     coupling_voip = [e for e in stage_logs if e.get("stage_name") == "WIFI_COUPLING_VOIP"]
-    stage_groups: list[tuple[str, list[dict[str, Any]]]] = [
-        ("1. Wi-Fi Calibration", wifi_calibration),
-        ("2. Label Printing", label_printing),
-        ("3. Box Build", box_build),
-        ("4. MAC Write", writer),
-        ("5. BOB Calibration", bob_calibration),
-        ("6. Wi-Fi Coupling & VoIP", coupling_voip),
-        ("7. Verification", verifier),
+    stage_groups: list[tuple[str, list[dict[str, Any]], bool]] = [
+        ("1. Wi-Fi Calibration", wifi_calibration, False),
+        ("2. Label Printing + PCB Link", label_printing, False),
+        ("3. MAC Write + Firmware", writer, False),
+        ("4. BOB Calibration", bob_calibration, True),
+        ("5. Wi-Fi Coupling & VoIP", coupling_voip, False),
+        ("6. Final Verification", verifier, False),
     ]
     stages = []
-    for label, rows in stage_groups:
+    for label, rows, optional in stage_groups:
         passed, failed, tested = result_counts(rows)
         stages.append({
             "stage": label, "pass": passed, "fail": failed, "tested": tested,
-            "yield": safe_rate(passed, tested),
+            "yield": safe_rate(passed, tested), "optional": optional,
         })
 
     daily_map: dict[str, Counter] = defaultdict(Counter)
+    hourly_map: dict[str, Counter] = defaultdict(Counter)
     for event in verifier:
-        day = as_iso(event["completed_at"])[:10]
+        stamp = as_iso(event["completed_at"])
+        day = stamp[:10]
+        hour = stamp[:13] + ":00"
         daily_map[day]["total"] += 1
         daily_map[day]["pass" if event["status"] == "PASS" else "fail"] += 1
+        hourly_map[hour]["total"] += 1
+        hourly_map[hour]["pass" if event["status"] == "PASS" else "fail"] += 1
     daily = [{"day": day, "pass": c["pass"], "fail": c["fail"], "total": c["total"]} for day, c in sorted(daily_map.items())]
+    hourly = [{"hour": hour, "pass": c["pass"], "fail": c["fail"], "total": c["total"]} for hour, c in sorted(hourly_map.items())]
+    current_uph = hourly[-1]["total"] if hourly else 0
+
+    final_mac_counts = Counter((e.get("mac") or "").upper() for e in verifier if e.get("mac"))
+    retest_count = sum(max(0, count - 1) for count in final_mac_counts.values())
+    retest_rate = safe_rate(retest_count, max(1, len(final_mac_counts))) if final_mac_counts else 0.0
 
     station_map: dict[str, dict[str, Any]] = {}
     for event in [e for e in events if e["event_type"] != "MAC_POOL_SNAPSHOT"]:
@@ -410,33 +437,66 @@ def dashboard_data(start: date, end: date) -> dict[str, Any]:
     for item in stations:
         item["yield"] = safe_rate(item["pass"], item["total"])
 
+    failure_pareto = sorted(
+        [{"stage": s["stage"].replace(s["stage"].split(".")[0] + ". ", ""), "fail": s["fail"]} for s in stages if s["fail"] > 0],
+        key=lambda x: (-x["fail"], x["stage"]),
+    )
+    funnel = [{"stage": s["stage"].replace(s["stage"].split(".")[0] + ". ", ""), "count": s["tested"], "optional": s["optional"]} for s in stages]
+
     production_events = [e for e in events if e["event_type"] != "MAC_POOL_SNAPSHOT"]
-    recent_rows = sorted(production_events, key=lambda e: as_iso(e["completed_at"]), reverse=True)[:200]
+    recent_rows = sorted(production_events, key=lambda e: as_iso(e["completed_at"]), reverse=True)[:300]
     recent = [{
         "completed_at": as_iso(e["completed_at"]), "stage": display_event_stage(e),
+        "model": event_model(e),
         "mac": e["mac"] or "", "serial_number": e["serial_number"] or "",
         "gpon_number": e["gpon_number"] or "", "pcb_serial_number": e.get("pcb_serial_number") or "",
         "part_number": e["part_number"] or "",
         "client_id": e["station_id"] or "", "router_ip": e["router_ip"] or "",
         "source_file": e.get("source_file") or "", "status": e["status"],
+        "firmware_result": e.get("firmware_result") or "",
+        "firmware_version": e.get("firmware_version") or "",
         "detail": e["detail"] or "", "event_type": e["event_type"],
     } for e in recent_rows]
 
     snapshot = db.latest_snapshot()
     metrics = snapshot.get("metrics", {}) if isinstance(snapshot, dict) else {}
+    wip = max(0, len(wifi_calibration) - final_total)
+
+    insights: list[dict[str, str]] = []
+    tested_stages = [s for s in stages if s["tested"] > 0]
+    if tested_stages:
+        lowest = min(tested_stages, key=lambda s: s["yield"])
+        if lowest["yield"] < 98:
+            insights.append({"level": "warning", "title": "Lowest stage yield", "text": f"{lowest['stage']} is at {lowest['yield']}% FPY with {lowest['fail']} failures."})
+    if failure_pareto:
+        top = failure_pareto[0]
+        insights.append({"level": "attention", "title": "Top failure contributor", "text": f"{top['stage']} has the highest failure count in the selected range ({top['fail']})."})
+    if TARGET_UPH > 0:
+        level = "good" if current_uph >= TARGET_UPH else "warning"
+        insights.append({"level": level, "title": "Hourly output", "text": f"Latest finished-product rate is {current_uph} UPH versus target {TARGET_UPH} UPH."})
+    if wip > 0:
+        insights.append({"level": "info", "title": "Estimated WIP", "text": f"{wip} units entered Wi-Fi Calibration but have not yet reached Final Verification in this range."})
+    if not insights:
+        insights.append({"level": "good", "title": "No major signal", "text": "No obvious production exception is visible in the selected data range."})
+
     return {
         "range": {"start": start.isoformat(), "end": end.isoformat()},
+        "filters": {"model": selected_model, "models": models},
         "kpi": {
             "production_volume": final_total, "line_input": len(wifi_calibration),
             "final_pass": final_pass, "final_fail": final_fail,
             "final_yield": safe_rate(final_pass, final_total),
             "writer_pass": writer_pass, "writer_fail": writer_fail,
-            "wip": max(0, len(wifi_calibration) - final_total),
+            "writer_yield": safe_rate(writer_pass, writer_total),
+            "wip": wip,
+            "current_uph": current_uph, "target_uph": TARGET_UPH,
+            "retest_count": retest_count, "retest_rate": retest_rate,
             "available_macs": int(metrics.get("available", 0) or 0),
             "reserved_macs": int(metrics.get("reserved", 0) or 0),
         },
-        "daily": daily, "stages": stages, "stations": stations, "recent": recent,
-        "refresh_seconds": REFRESH_SECONDS,
+        "daily": daily, "hourly": hourly, "stages": stages, "funnel": funnel,
+        "failure_pareto": failure_pareto, "stations": stations, "recent": recent,
+        "insights": insights, "refresh_seconds": REFRESH_SECONDS,
     }
 
 
@@ -458,7 +518,7 @@ def valid_dashboard_auth(header: str) -> bool:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ETECloudMES/13.7"
+    server_version = "ETECloudMES/13.61"
 
     def send_bytes(self, data: bytes, content_type: str, status: int = 200, headers: dict[str, str] | None = None) -> None:
         self.send_response(status)
@@ -493,7 +553,7 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         try:
             if path == "/api/health":
-                return self.send_json({"ok": True, "service": "ETE Cloud MES", "version": "13.7", "database": db.backend_name, "events": db.count()})
+                return self.send_json({"ok": True, "service": "ETE Cloud MES", "version": "13.61", "database": db.backend_name, "events": db.count()})
             if path == "/api/traceability":
                 if not self.require_dashboard():
                     return
@@ -513,13 +573,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.require_dashboard():
                     return
                 start, end = parse_range(query)
-                return self.send_json(dashboard_data(start, end))
+                model = query.get("model", [""])[0]
+                return self.send_json(dashboard_data(start, end, model))
             if path in {"/export/verification.csv", "/export/production.csv"}:
                 if not self.require_dashboard():
                     return
                 start, end = parse_range(query)
                 events = [e for e in db.events_between(start, end) if e["event_type"] != "MAC_POOL_SNAPSHOT"]
-                fields = ["completed_at", "event_type", "stage_name", "plant_id", "station_id", "router_slot", "router_ip", "mac", "serial_number", "scanned_serial_number", "gpon_number", "pcb_serial_number", "part_number", "status", "source_file", "source_offset", "server_check", "serial_scan_result", "wifi_calibration_result", "bob_calibration_result", "firmware_result", "firmware_version", "led_result", "reset_result", "wps_result", "user_mode_result", "detail", "raw_log", "event_id"]
+                fields = ["completed_at", "event_type", "stage_name", "plant_id", "station_id", "router_slot", "router_ip", "mac", "serial_number", "scanned_serial_number", "gpon_number", "pcb_serial_number", "part_number", "status", "source_file", "source_offset", "server_check", "serial_scan_result", "wifi_calibration_result", "bob_calibration_result", "firmware_result", "firmware_version", "led_result", "wps_result", "user_mode_result", "detail", "raw_log", "event_id"]
                 out = io.StringIO(); writer = csv.DictWriter(out, fieldnames=fields); writer.writeheader()
                 for event in events:
                     row = {key: event.get(key, "") for key in fields}; row["completed_at"] = as_iso(row["completed_at"]); writer.writerow(row)
@@ -580,6 +641,6 @@ class Handler(BaseHTTPRequestHandler):
 db = CloudDatabase()
 
 if __name__ == "__main__":
-    print(f"ETE Cloud MES v13.7: http://{HOST}:{PORT}")
+    print(f"ETE Cloud MES v13.61: http://{HOST}:{PORT}")
     print(f"Database backend: {db.backend_name}")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
