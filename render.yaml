@@ -21,6 +21,8 @@ services:
         value: "10"
       - key: MAX_BATCH_SIZE
         value: "500"
+      - key: TARGET_UPH
+        value: "0"
 
 databases:
   - name: ete-production-mes-db
