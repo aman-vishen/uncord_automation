@@ -1,0 +1,19 @@
+# ============================================================
+# ETE SOLUTIONS INDIA - MAC WRITER v13.70
+# Exact flow is controlled by app.py/config.txt:
+# Firmware -> firstboot -> clearall -> factorymode -> identity write
+# -> firstboot -> post-reboot verify
+# ============================================================
+
+[WRITE]
+prolinecmd macaddr set {MAC_NOSEP}
+prolinecmd hwsn set {SERIAL}
+prolinecmd gponsn set {GPON}
+prolinecmd telnetEnable set 1
+
+[VERIFY]
+prolinecmd macaddr get
+prolinecmd hwsn get
+prolinecmd gponsn get
+
+[FINALIZE]
