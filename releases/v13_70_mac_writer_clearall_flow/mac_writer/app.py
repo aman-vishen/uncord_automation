@@ -21,7 +21,7 @@ try:
 except ImportError:
     telnetlib3 = None
 
-APP_VERSION = "13.70-ETE-MAC-WRITER-FW-FIRST-CLEARALL-FIRSTBOOT"
+APP_VERSION = "13.70-ETE-MAC-WRITER-FW-FIRST-CLEARALL-POSTWRITE-VERIFY"
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.txt"
 COMMANDS_PATH = BASE_DIR / "commands.txt"
@@ -560,130 +560,6 @@ def wait_for_router_after_firmware(router: RouterTarget, initial_delay: float, t
     raise AppError(f"Router Telnet service did not return after firmware update within {timeout:g}s. Last check: {last_error}")
 
 
-async def run_telnet_commands(router: RouterTarget, commands: list[str], emit, title: str,
-                              allow_disconnect_after_last: bool = False) -> None:
-    """Run exact production commands over the DUT's dedicated Telnet/NIC path."""
-    if telnetlib3 is None:
-        raise AppError("Missing dependency 'telnetlib3'. Run: pip install -r requirements.txt")
-    reader, writer = await asyncio.wait_for(
-        telnetlib3.open_connection(
-            host=router.ip,
-            port=router.port,
-            local_addr=(router.source_ip, 0),
-            connect_minwait=0.05,
-        ),
-        timeout=router.timeout,
-    )
-    try:
-        if router.username:
-            text = await read_until(reader, router.login_prompt, router.timeout)
-            if text:
-                emit(text.rstrip())
-            writer.write(router.username + "\r\n")
-        if router.password:
-            text = await read_until(reader, router.password_prompt, router.timeout)
-            if text:
-                emit(text.rstrip())
-            writer.write(router.password + "\r\n")
-        if router.command_prompt:
-            text = await read_until(reader, router.command_prompt, router.timeout)
-            if text:
-                emit(text.rstrip())
-
-        emit(f"--- {title} ---")
-        for index, cmd in enumerate(commands):
-            cmd=(cmd or "").strip()
-            if not cmd:
-                continue
-            emit(f"> {cmd}")
-            writer.write(cmd + "\r\n")
-            await asyncio.sleep(max(0.2, router.command_delay))
-            try:
-                response = await read_until(reader, router.command_prompt, router.timeout)
-                if response:
-                    emit(response.rstrip())
-                upper=(response or "").upper()
-                if any(token in upper for token in ("UNKNOWN COMMAND","NOT FOUND","INVALID COMMAND","COMMAND FAILED")):
-                    raise AppError(f"{title} command failed: {cmd} | {response.strip()}")
-            except Exception:
-                if allow_disconnect_after_last and index == len(commands)-1:
-                    emit(f"{title}: DUT disconnected/rebooted as expected.")
-                    break
-                raise
-    finally:
-        try:
-            writer.close()
-        except Exception:
-            pass
-
-
-async def write_identity_only(router: RouterTarget, mac: str, serial: str, gpon: str, seq: int,
-                              write_cmds: list[str], emit) -> None:
-    expanded=[expand_command(raw, mac, serial, gpon, seq) for raw in write_cmds]
-    await run_telnet_commands(router, expanded, emit, "WRITE MAC / SERIAL / GPON")
-
-
-async def verify_identity_only(router: RouterTarget, mac: str, serial: str, gpon: str, seq: int,
-                               verify_cmds: list[str], emit) -> tuple[bool, dict]:
-    if telnetlib3 is None:
-        raise AppError("Missing dependency 'telnetlib3'. Run: pip install -r requirements.txt")
-    reader, writer = await asyncio.wait_for(
-        telnetlib3.open_connection(
-            host=router.ip,
-            port=router.port,
-            local_addr=(router.source_ip, 0),
-            connect_minwait=0.05,
-        ),
-        timeout=router.timeout,
-    )
-    outputs=[]
-    try:
-        if router.username:
-            text=await read_until(reader, router.login_prompt, router.timeout)
-            if text: emit(text.rstrip())
-            writer.write(router.username + "\r\n")
-        if router.password:
-            text=await read_until(reader, router.password_prompt, router.timeout)
-            if text: emit(text.rstrip())
-            writer.write(router.password + "\r\n")
-        if router.command_prompt:
-            text=await read_until(reader, router.command_prompt, router.timeout)
-            if text: emit(text.rstrip())
-        emit("--- VERIFY MAC / SERIAL / GPON AFTER REBOOT ---")
-        for raw in verify_cmds:
-            cmd=expand_command(raw, mac, serial, gpon, seq)
-            emit(f"> {cmd}")
-            writer.write(cmd + "\r\n")
-            await asyncio.sleep(router.command_delay)
-            response=await read_until(reader, router.command_prompt, router.timeout)
-            outputs.append(response or "")
-            if response: emit(response.rstrip())
-    finally:
-        try:
-            writer.close()
-        except Exception:
-            pass
-    output="\n".join(outputs)
-    checks={
-        "MAC": validate_mac(mac) in normalize_mac(output),
-        "SERIAL": serial.upper() in output.upper(),
-        "GPON": gpon.upper() in output.upper(),
-    }
-    for label, passed in checks.items():
-        emit(f"VERIFY {label}: {'PASS' if passed else 'FAIL'}")
-    return all(checks.values()), checks
-
-
-def wait_telnet_cfg(router: RouterTarget, cfg: dict[str,str], prefix: str, emit) -> None:
-    wait_for_router_after_firmware(
-        router,
-        float(cfg.get(prefix + "_INITIAL_DELAY_SECONDS", "10")),
-        float(cfg.get(prefix + "_TIMEOUT_SECONDS", "180")),
-        float(cfg.get(prefix + "_POLL_SECONDS", "2")),
-        emit,
-    )
-
-
 async def telnet_session(router: RouterTarget, mac: str, serial: str, gpon: str, seq: int,
                          write_cmds: list[str], verify_cmds: list[str], finalize_cmds: list[str], emit):
     if telnetlib3 is None:
@@ -724,17 +600,15 @@ async def telnet_session(router: RouterTarget, mac: str, serial: str, gpon: str,
             if text:
                 emit(text.rstrip())
 
-        # v13.70: PRE_WRITE_COMMAND is optional. Factory preparation happens
-        # before identity reservation, so do not silently run clearall here.
-        pre_write_command = parse_key_value_file(CONFIG_PATH).get("PRE_WRITE_COMMAND", "").strip()
-        if pre_write_command:
-            emit("--- PRE-WRITE COMMAND ---")
-            emit(f"> {pre_write_command}")
-            writer.write(pre_write_command + "\r\n")
-            await asyncio.sleep(router.command_delay)
-            response = await read_until(reader, router.command_prompt, router.timeout)
-            if response:
-                emit(response.rstrip())
+        # Always clear any previous production identity before the first write command.
+        pre_write_command = parse_key_value_file(CONFIG_PATH).get("PRE_WRITE_COMMAND", "prolinecmd clearall").strip() or "prolinecmd clearall"
+        emit("--- PRE-WRITE CLEAR ---")
+        emit(f"> {pre_write_command}")
+        writer.write(pre_write_command + "\r\n")
+        await asyncio.sleep(router.command_delay)
+        response = await read_until(reader, router.command_prompt, router.timeout)
+        if response:
+            emit(response.rstrip())
 
         emit("--- WRITE MAC / SERIAL / GPON ---")
         for raw in write_cmds:
@@ -794,6 +668,93 @@ async def telnet_session(router: RouterTarget, mac: str, serial: str, gpon: str,
         except Exception:
             pass
 
+
+
+async def v1370_telnet_commands(router: RouterTarget, commands: list[str], emit,
+                                 allow_disconnect_last: bool = False,
+                                 strict: bool = False) -> list[str]:
+    """Run production commands over the DUT's dedicated NIC."""
+    if telnetlib3 is None:
+        raise AppError("Missing dependency 'telnetlib3'. Run: pip install -r requirements.txt")
+    reader, writer = await asyncio.wait_for(
+        telnetlib3.open_connection(
+            host=router.ip,
+            port=router.port,
+            local_addr=(router.source_ip, 0),
+            connect_minwait=0.05,
+        ),
+        timeout=router.timeout,
+    )
+    outputs: list[str] = []
+    try:
+        if router.username:
+            text = await read_until(reader, router.login_prompt, router.timeout)
+            if text:
+                emit(text.rstrip())
+            writer.write(router.username + "\r\n")
+        if router.password:
+            text = await read_until(reader, router.password_prompt, router.timeout)
+            if text:
+                emit(text.rstrip())
+            writer.write(router.password + "\r\n")
+        if router.command_prompt:
+            text = await read_until(reader, router.command_prompt, router.timeout)
+            if text:
+                emit(text.rstrip())
+
+        for index, cmd in enumerate(commands):
+            cmd = (cmd or "").strip()
+            if not cmd:
+                continue
+            emit(f"> {cmd}")
+            writer.write(cmd + "\r\n")
+            await asyncio.sleep(max(0.2, router.command_delay))
+            is_last = index == len(commands) - 1
+            try:
+                response = await read_until(reader, router.command_prompt, router.timeout)
+            except Exception as exc:
+                if allow_disconnect_last and is_last:
+                    emit(f"Connection ended after reboot command (expected): {exc}")
+                    outputs.append("")
+                    break
+                raise
+            outputs.append(response or "")
+            if response:
+                emit(response.rstrip())
+            if strict:
+                upper = (response or "").upper()
+                bad_tokens = ("UNKNOWN COMMAND", "NOT FOUND", "INVALID COMMAND", "COMMAND FAILED", "FAIL:", "ERROR:")
+                if any(token in upper for token in bad_tokens):
+                    raise AppError(f"Command failed: {cmd} | {response.strip()[:500]}")
+        return outputs
+    finally:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
+async def v1370_write_identity(router: RouterTarget, mac: str, serial: str, gpon: str, seq: int,
+                               write_cmds: list[str], emit) -> None:
+    commands = [expand_command(raw, mac, serial, gpon, seq) for raw in write_cmds]
+    emit("--- WRITE MAC / SERIAL / GPON ---")
+    await v1370_telnet_commands(router, commands, emit, strict=True)
+
+
+async def v1370_verify_identity(router: RouterTarget, mac: str, serial: str, gpon: str, seq: int,
+                                verify_cmds: list[str], emit) -> tuple[bool, dict]:
+    commands = [expand_command(raw, mac, serial, gpon, seq) for raw in verify_cmds]
+    emit("--- VERIFY MAC / SERIAL / GPON AFTER REBOOT ---")
+    outputs = await v1370_telnet_commands(router, commands, emit)
+    output = "\n".join(outputs)
+    checks = {
+        "MAC": validate_mac(mac) in normalize_mac(output),
+        "SERIAL": serial.upper() in output.upper(),
+        "GPON": gpon.upper() in output.upper(),
+    }
+    for label, passed in checks.items():
+        emit(f"VERIFY {label}: {'PASS' if passed else 'FAIL'}")
+    return all(checks.values()), checks
 
 
 class SlotCard:
@@ -1543,12 +1504,13 @@ class ClientApp(tk.Tk):
     def _cycle_worker(self, router: RouterTarget, client: ServerClient, request_id: str, cfg, write_cmds, verify_cmds, finalize_cmds, selected_identity=None):
         def emit(msg):
             self.events.put(("log", (router.key, msg)))
+
         reservation_id = None
         mac = None
         serial = ""
         gpon = ""
-        firmware_applied = False
         firmware_name = ""
+
         try:
             emit(f"Pre-checking Telnet connection to {router.ip}:{router.port} via NIC {router.source_ip} ...")
             try:
@@ -1559,112 +1521,186 @@ class ClientApp(tk.Tk):
                 return
             self.events.put(("preflight_ok", (router.key, selected_identity)))
 
-            # v13.70 exact flow:
-            # Firmware -> firstboot -> clearall -> factorymode=1 -> reserve identity
-            # -> write identity -> firstboot -> verify identity after reboot.
+            # ============================================================
+            # v13.70 FLOW
+            # FW -> firstboot -> clearall -> factorymode set 1
+            # -> reserve identity -> write -> firstboot -> verify -> PASS
+            # ============================================================
             firmware = client.firmware_config()
             firmware_enabled = bool(firmware.get("enabled"))
-            require_fw = _cfg_bool(cfg, "REQUIRE_FIRMWARE_UPGRADE", True)
-            if require_fw and not firmware_enabled:
-                raise AppError("Firmware upgrade is required at MAC Write, but firmware is OFF on the central server.")
+            require_firmware = _cfg_bool(cfg, "REQUIRE_FIRMWARE_UPGRADE", True)
+
+            if require_firmware and not firmware_enabled:
+                raise AppError("Firmware upgrade is required, but firmware is OFF on the central server.")
             if firmware_enabled and not firmware.get("available"):
                 raise AppError("Firmware update is ON on the central server, but no firmware file is available.")
 
             if firmware_enabled:
                 self.events.put(("firmware_start", (router.key, firmware)))
-                emit(f"Starting FIRST DUT STEP — firmware update: {firmware.get('file_name')} ({firmware.get('size',0)} bytes)")
+                emit(f"Starting FIRST DUT STEP — firmware update: {firmware.get('file_name')} ({firmware.get('size', 0)} bytes)")
                 local_fw = client.download_firmware(firmware)
                 emit(f"Firmware downloaded from server and SHA-256 verified: {local_fw.name}")
+                emit(f"Using direct SSH/SFTP updater via dedicated PC NIC {router.source_ip}.")
                 fw_result = run_direct_firmware_update(router, local_fw, cfg, emit)
                 after_text = json.dumps(fw_result.get("after", {}), ensure_ascii=False, sort_keys=True)
                 if after_text:
                     emit(f"Post-upgrade board info: {after_text[:500]}")
-                firmware_applied=True
-                firmware_name=str(firmware.get("file_name") or "")
+                firmware_name = str(firmware.get("file_name") or "")
                 self.events.put(("firmware_done", (router.key, firmware)))
-                wait_telnet_cfg(router, cfg, "FIRMWARE_TELNET_RECONNECT", emit)
-            else:
-                emit("Firmware upgrade bypassed by configuration.")
-                self.events.put(("firmware_skipped", (router.key,)))
 
-            firstboot_pre = cfg.get("PRE_IDENTITY_FIRSTBOOT_COMMAND", "firstboot -y -r").strip()
-            if firstboot_pre:
-                asyncio.run(run_telnet_commands(router,[firstboot_pre],emit,"PRE-IDENTITY FIRSTBOOT",True))
-                wait_telnet_cfg(router,cfg,"PRE_IDENTITY_FIRSTBOOT_RECONNECT",emit)
-
-            clear_cmd = cfg.get("PRE_FACTORY_CLEAR_COMMAND", "prolinecmd clearall").strip()
-            factory_cmd = cfg.get("FACTORYMODE_COMMAND", "prolinecmd factorymode set 1").strip()
-            prep_cmds=[x for x in (clear_cmd,factory_cmd) if x]
-            if prep_cmds:
-                asyncio.run(run_telnet_commands(router,prep_cmds,emit,"CLEARALL + FACTORY MODE"))
-
-            require_pcb_serial = str(cfg.get("REQUIRE_PCB_SERIAL_BEFORE_WRITE", "1")).strip().lower() not in {"0","no","false","off"}
-            emit("Factory preparation complete. Reserving identity now.")
-            if selected_identity:
-                alloc=client.allocate_specific(router,request_id,selected_identity.get("mac",""),require_pcb_serial=require_pcb_serial)
-            else:
-                alloc=client.allocate(router,request_id,require_pcb_serial=require_pcb_serial)
-
-            reservation_id=alloc["reservation_id"]
-            mac=alloc["mac"]
-            serial,gpon,seq=build_identifiers(alloc,cfg)
-            alloc.update({"serial_number":serial,"gpon_number":gpon,"seq":seq})
-            set_pending_job(router.key,{
-                "slot":router.slot,"router_name":router.name,"router_ip":router.ip,
-                "source_ip":router.source_ip,"request_id":request_id,
-                "reservation_id":reservation_id,"mac":mac,"serial_number":serial,
-                "gpon_number":gpon,"seq":seq,"state":"RESERVED_AFTER_FACTORY_PREP",
-                "created_at":time.time(),
-            })
-            self.events.put(("allocated",(router.key,alloc)))
-            self.events.put(("telnet_start",(router.key,)))
-
-            asyncio.run(write_identity_only(router,mac,serial,gpon,seq,write_cmds,emit))
-
-            post_write_firstboot=cfg.get("POST_WRITE_FIRSTBOOT_COMMAND","firstboot -y -r").strip()
-            if post_write_firstboot:
-                asyncio.run(run_telnet_commands(router,[post_write_firstboot],emit,"POST-WRITE FIRSTBOOT",True))
-                wait_telnet_cfg(router,cfg,"POST_WRITE_FIRSTBOOT_RECONNECT",emit)
-
-            passed,checks=asyncio.run(
-                verify_identity_only(router,mac,serial,gpon,seq,verify_cmds,emit)
-            )
-            checks["FIRMWARE"]=firmware_applied or not require_fw
-            checks["FACTORYMODE"]=True
-            checks["POST_WRITE_FIRSTBOOT"]=True
-            self.events.put(("verify_result",(router.key,passed,checks,False)))
-
-            if passed:
-                status="PASS"
-                detail=(
-                    f"Firmware first completed"
-                    + (f": {firmware_name}" if firmware_name else "")
-                    + " | pre-identity firstboot | clearall | factorymode=1"
-                    + " | identity written | post-write firstboot | post-reboot identity verified"
+                wait_for_router_after_firmware(
+                    router,
+                    float(cfg.get("FIRMWARE_TELNET_RECONNECT_DELAY_SECONDS", "2")),
+                    float(cfg.get("FIRMWARE_TELNET_RECONNECT_TIMEOUT_SECONDS", "180")),
+                    float(cfg.get("FIRMWARE_TELNET_RECONNECT_POLL_SECONDS", "2")),
+                    emit,
                 )
             else:
-                status="FAIL"
-                detail=f"Post-reboot identity verification failed: {checks}"
+                emit("Firmware upgrade bypassed because REQUIRE_FIRMWARE_UPGRADE=0 and server firmware is OFF.")
+                self.events.put(("firmware_skipped", (router.key,)))
 
-            # Server reporting is bookkeeping only; no more DUT command is executed
-            # after firmware when firmware is enabled.
+            # FIRSTBOOT immediately after successful firmware/reconnect.
+            firstboot_pre = cfg.get("POST_FIRMWARE_FIRSTBOOT_COMMAND", "firstboot -y -r").strip()
+            if firstboot_pre:
+                emit("--- POST-FIRMWARE FIRSTBOOT ---")
+                asyncio.run(v1370_telnet_commands(
+                    router, [firstboot_pre], emit,
+                    allow_disconnect_last=True, strict=False
+                ))
+                wait_for_router_after_firmware(
+                    router,
+                    float(cfg.get("POST_FIRMWARE_FIRSTBOOT_DELAY_SECONDS", "10")),
+                    float(cfg.get("POST_FIRMWARE_FIRSTBOOT_TIMEOUT_SECONDS", "180")),
+                    float(cfg.get("POST_FIRMWARE_FIRSTBOOT_POLL_SECONDS", "2")),
+                    emit,
+                )
+
+            # User-requested preparation order:
+            # clearall MUST run before factorymode set 1.
+            clear_cmd = cfg.get("POST_FIRMWARE_CLEAR_COMMAND", "prolinecmd clearall").strip()
+            factory_cmd = cfg.get("POST_FIRMWARE_FACTORYMODE_COMMAND", "prolinecmd factorymode set 1").strip()
+            prep_commands = [x for x in (clear_cmd, factory_cmd) if x]
+            if prep_commands:
+                emit("--- CLEAR IDENTITY / SET FACTORY MODE ---")
+                asyncio.run(v1370_telnet_commands(router, prep_commands, emit, strict=True))
+
+            # Only reserve identity AFTER firmware + firstboot + clearall + factorymode succeed.
+            require_pcb_serial = str(cfg.get("REQUIRE_PCB_SERIAL_BEFORE_WRITE", "1")).strip().lower() not in {"0", "no", "false", "off"}
+            emit(f"PCB serial gate: {'ON' if require_pcb_serial else 'OFF'}")
+            emit("Preparation complete. Reserving identity now.")
+
+            try:
+                if selected_identity:
+                    emit(f"Reserving scanned identity {selected_identity.get('mac', '')}.")
+                    alloc = client.allocate_specific(
+                        router, request_id, selected_identity.get("mac", ""),
+                        require_pcb_serial=require_pcb_serial
+                    )
+                else:
+                    alloc = client.allocate(router, request_id, require_pcb_serial=require_pcb_serial)
+            except AppError as exc:
+                if "NO PCB SERIAL NUMBER PRESENT" in str(exc).upper():
+                    set_pending_job(router.key, None)
+                    self.events.put((
+                        "pcb_missing",
+                        (
+                            router.key,
+                            "NO PCB SERIAL NUMBER PRESENT — Link PCB before MAC Write. "
+                            "MAC / Serial / GPON were not written.",
+                        ),
+                    ))
+                    return
+                raise
+
+            reservation_id = alloc["reservation_id"]
+            mac = alloc["mac"]
+            serial, gpon, seq = build_identifiers(alloc, cfg)
+            alloc.update({"serial_number": serial, "gpon_number": gpon, "seq": seq})
+
+            set_pending_job(router.key, {
+                "slot": router.slot,
+                "router_name": router.name,
+                "router_ip": router.ip,
+                "source_ip": router.source_ip,
+                "request_id": request_id,
+                "reservation_id": reservation_id,
+                "mac": mac,
+                "serial_number": serial,
+                "gpon_number": gpon,
+                "seq": seq,
+                "state": "RESERVED_AFTER_PREP",
+                "created_at": time.time(),
+            })
+            self.events.put(("allocated", (router.key, alloc)))
+            self.events.put(("telnet_start", (router.key,)))
+
+            # Write identity only. Do NOT verify until after the second firstboot.
+            asyncio.run(v1370_write_identity(
+                router, mac, serial, gpon, seq, write_cmds, emit
+            ))
+
+            # Second firstboot AFTER writing MAC/SN/GPON.
+            firstboot_post = cfg.get("POST_WRITE_FIRSTBOOT_COMMAND", "firstboot -y -r").strip()
+            if firstboot_post:
+                emit("--- POST-WRITE FIRSTBOOT ---")
+                asyncio.run(v1370_telnet_commands(
+                    router, [firstboot_post], emit,
+                    allow_disconnect_last=True, strict=False
+                ))
+                wait_for_router_after_firmware(
+                    router,
+                    float(cfg.get("POST_WRITE_FIRSTBOOT_DELAY_SECONDS", "10")),
+                    float(cfg.get("POST_WRITE_FIRSTBOOT_TIMEOUT_SECONDS", "180")),
+                    float(cfg.get("POST_WRITE_FIRSTBOOT_POLL_SECONDS", "2")),
+                    emit,
+                )
+
+            # Final verification is intentionally after reboot.
+            passed, checks = asyncio.run(v1370_verify_identity(
+                router, mac, serial, gpon, seq, verify_cmds, emit
+            ))
+            if firmware_enabled:
+                checks["FIRMWARE"] = True
+
+            self.events.put(("verify_result", (router.key, passed, checks, False)))
+
+            if passed:
+                status = "PASS"
+                detail = (
+                    "v13.70 flow complete"
+                    + (f" | Firmware: {firmware_name}" if firmware_name else " | Firmware: bypassed")
+                    + " | firstboot(pre) | clearall | factorymode=1"
+                    + " | identity written | firstboot(post) | post-reboot identity verified"
+                )
+            else:
+                status = "FAIL"
+                detail = f"Post-reboot identity verification failed: {checks}"
+
             report = client.report(router, reservation_id, status, detail, serial, gpon)
             set_pending_job(router.key, None)
             self.events.put(("done", (router.key, mac, serial, gpon, status, report)))
+
         except Exception as exc:
             error_text = str(exc)
             if reservation_id:
                 try:
-                    # With firmware-last sequencing, a firmware failure occurs after
-                    # the identity has already been written. Keep that identity blocked
-                    # and report ERROR rather than allowing it to be reused.
-                    report = client.report(router, reservation_id, "ERROR", error_text, serial, gpon)
+                    report = client.report(
+                        router, reservation_id, "ERROR", error_text, serial, gpon
+                    )
                     set_pending_job(router.key, None)
-                    self.events.put(("done", (router.key, mac or "UNKNOWN", serial, gpon, "ERROR", report)))
+                    self.events.put(("done", (
+                        router.key, mac or "UNKNOWN", serial, gpon, "ERROR", report
+                    )))
                     self.events.put(("log", (router.key, "ERROR: " + error_text)))
                     return
                 except Exception as report_exc:
-                    self.events.put(("log", (router.key, f"Could not report ERROR to server: {report_exc}")))
+                    self.events.put(("log", (
+                        router.key,
+                        f"Could not report ERROR to server: {report_exc}"
+                    )))
+            else:
+                # No identity was reserved yet, so the same label can be retried safely.
+                set_pending_job(router.key, None)
             self.events.put(("cycle_error", (router.key, mac, error_text)))
 
     def resolve_pending(self, router: RouterTarget):
@@ -1918,7 +1954,7 @@ class ClientApp(tk.Tk):
                     card = self.cards[slot_key]
                     card.set_step("reserve", "✓")
                     card.set_step("write", "…")
-                    card.set_state("PROGRAMMING", "Factory preparation complete; writing identity, then rebooting before verification",
+                    card.set_state("PROGRAMMING", "Preparation complete; writing MAC, serial and GPON before post-write reboot",
                                    alloc["mac"], alloc.get("serial_number", "—"), alloc.get("gpon_number", "—"), alloc.get("pcb_serial_number", "—"))
                     self._set_stats(alloc.get("stats", {}))
                     self._append(slot_key, f"Reserved MAC={alloc['mac']} SERIAL={alloc.get('serial_number','')} GPON={alloc.get('gpon_number','')} reservation={alloc['reservation_id']}")
