@@ -1,0 +1,36 @@
+# ============================================================
+# ETE SOLUTIONS INDIA - MAC WRITER v13.70
+# ============================================================
+# Exact production sequence:
+#   firmware upgrade
+#   -> firstboot -y -r
+#   -> wait for Telnet
+#   -> prolinecmd factorymode set 1
+#   -> reserve identity
+#   -> write MAC / SN / GPON
+#   -> firstboot -y -r
+#   -> wait for Telnet
+#   -> verify MAC / SN / GPON
+#
+# Firmware itself is handled by app.py + firmware_updater.py.
+
+[POST_FIRMWARE]
+firstboot -y -r
+prolinecmd factorymode set 1
+
+[WRITE]
+prolinecmd macaddr set {MAC_NOSEP}
+prolinecmd hwsn set {SERIAL}
+prolinecmd gponsn set {GPON}
+prolinecmd telnetEnable set 1
+
+[POST_WRITE]
+firstboot -y -r
+
+[VERIFY]
+prolinecmd macaddr get
+prolinecmd hwsn get
+prolinecmd gponsn get
+
+[FINALIZE]
+# intentionally empty
