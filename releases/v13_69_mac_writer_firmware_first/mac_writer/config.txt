@@ -52,6 +52,10 @@ PRE_WRITE_COMMAND =
 # ============================================================
 # v13.69 POST-FIRMWARE BOARD PREPARATION
 # ============================================================
+# 1 = firmware step is mandatory. If Central Server firmware is OFF, stop before identity reservation.
+# 0 = intentional bypass for service/testing only.
+REQUIRE_FIRMWARE_UPGRADE = 1
+
 POST_FIRMWARE_FACTORYMODE_COMMAND = prolinecmd factorymode set 1
 POST_FIRMWARE_FIRSTBOOT_COMMAND = firstboot -y -r
 
