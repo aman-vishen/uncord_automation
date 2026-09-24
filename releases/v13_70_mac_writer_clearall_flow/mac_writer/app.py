@@ -1776,39 +1776,51 @@ class ClientApp(tk.Tk):
         ).start()
 
     def _resume_worker(self, router, client, pending, cfg, write_cmds, verify_cmds, finalize_cmds):
+        """Resume only the already-reserved identity portion of v13.70.
+
+        v13.70 reserves an identity only after firmware + pre-firstboot + clearall +
+        factorymode have completed, so recovery must NEVER flash firmware again.
+        """
         def emit(msg):
             self.events.put(("log", (router.key, msg)))
+
         mac = pending["mac"]
         serial = pending.get("serial_number", "")
         gpon = pending.get("gpon_number", "")
         seq = int(pending.get("seq", 0))
         reservation_id = pending["reservation_id"]
+
         try:
-            firmware = client.firmware_config()
-            firmware_enabled = bool(firmware.get("enabled"))
-            if firmware_enabled and not firmware.get("available"):
-                raise AppError("Firmware update is ON on the central server, but no firmware file is available.")
+            emit("v13.70 recovery: firmware/preparation will NOT be repeated.")
+            asyncio.run(v1370_write_identity(
+                router, mac, serial, gpon, seq, write_cmds, emit
+            ))
 
-            effective_finalize_cmds = [] if firmware_enabled else finalize_cmds
-            passed, checks = asyncio.run(
-                telnet_session(router, mac, serial, gpon, seq, write_cmds, verify_cmds, effective_finalize_cmds, emit)
-            )
-            self.events.put(("verify_result", (router.key, passed, checks, firmware_enabled)))
+            firstboot_post = cfg.get("POST_WRITE_FIRSTBOOT_COMMAND", "firstboot -y -r").strip()
+            if firstboot_post:
+                emit("--- RECOVERY POST-WRITE FIRSTBOOT ---")
+                asyncio.run(v1370_telnet_commands(
+                    router, [firstboot_post], emit,
+                    allow_disconnect_last=True, strict=False
+                ))
+                wait_for_router_after_firmware(
+                    router,
+                    float(cfg.get("POST_WRITE_FIRSTBOOT_DELAY_SECONDS", "10")),
+                    float(cfg.get("POST_WRITE_FIRSTBOOT_TIMEOUT_SECONDS", "180")),
+                    float(cfg.get("POST_WRITE_FIRSTBOOT_POLL_SECONDS", "2")),
+                    emit,
+                )
 
-            if passed and firmware_enabled:
-                self.events.put(("firmware_start", (router.key, firmware)))
-                local_fw = client.download_firmware(firmware)
-                emit(f"Recovery cycle: firmware is the FINAL DUT STEP: {local_fw.name}")
-                run_direct_firmware_update(router, local_fw, cfg, emit)
-                checks["FIRMWARE"] = True
-                self.events.put(("firmware_done", (router.key, firmware)))
-                detail = f"Recovered interrupted cycle | Firmware: {firmware.get('file_name', '')} applied as final DUT step"
-            elif passed:
-                detail = "Recovered interrupted cycle | Firmware skipped (server OFF); normal FINALIZE command used"
-            else:
-                detail = f"Recovered interrupted cycle | Identifier verification failed: {checks}"
-
+            passed, checks = asyncio.run(v1370_verify_identity(
+                router, mac, serial, gpon, seq, verify_cmds, emit
+            ))
+            self.events.put(("verify_result", (router.key, passed, checks, False)))
             status = "PASS" if passed else "FAIL"
+            detail = (
+                "Recovered v13.70 reserved identity | write + post-write firstboot + verification complete"
+                if passed else
+                f"Recovered v13.70 reserved identity | post-reboot verification failed: {checks}"
+            )
             report = client.report(router, reservation_id, status, detail, serial, gpon)
             set_pending_job(router.key, None)
             self.events.put(("done", (router.key, mac, serial, gpon, status, report)))
@@ -1877,14 +1889,14 @@ class ClientApp(tk.Tk):
                     card = self.cards[slot_key]
                     card.set_step("firmware", "…")
                     card.set_step("report", "—")
-                    card.set_state("FW UPDATE", f"FINAL DUT STEP — updating firmware: {firmware.get('file_name', '')}")
+                    card.set_state("FW UPDATE", f"FIRST DUT STEP — updating firmware: {firmware.get('file_name', '')}")
                     card.button.configure(state="disabled", text="FIRMWARE...", bg="#C8CED8")
                 elif kind == "firmware_done":
                     slot_key, firmware = payload
                     card = self.cards[slot_key]
                     card.set_step("firmware", "✓")
                     card.set_step("report", "…")
-                    card.set_state("PROGRAMMING", "Firmware complete and PCB reboot verified. Reporting PASS to server.")
+                    card.set_state("PROGRAMMING", "Firmware complete. Running firstboot, clearall and factory mode before identity write.")
                 elif kind == "firmware_skipped":
                     slot_key, = payload
                     card = self.cards[slot_key]
@@ -1944,7 +1956,7 @@ class ClientApp(tk.Tk):
                     card.set_step("reserve", "…")
                     card.set_step("firmware", "—")
                     if selected_identity:
-                        card.set_state("PROGRAMMING", "Router online; reserving scanned identity",
+                        card.set_state("PROGRAMMING", "Router online; starting firmware/preparation before identity reservation",
                                        selected_identity.get("mac", "—"), selected_identity.get("serial_number", "—"),
                                        selected_identity.get("gpon_number", "—"), selected_identity.get("pcb_serial_number", "—"))
                     else:
@@ -1980,7 +1992,7 @@ class ClientApp(tk.Tk):
                         self._set_stats(report["stats"])
                     if status == "PASS":
                         card.set_step("connect", "✓"); card.set_step("reserve", "✓"); card.set_step("write", "✓"); card.set_step("verify", "✓")
-                        card.set_state("PASS", "Cycle complete. If firmware was enabled, it was written last and the PCB reboot was verified. Replace PCB when ready.", mac, serial, gpon)
+                        card.set_state("PASS", "MAC Write PASS: firmware, firstboot, clearall, factorymode, identity write, second firstboot and post-reboot verification completed.", mac, serial, gpon)
                     elif status == "FAIL":
                         card.set_step("verify", "✕")
                         card.set_state("FAIL", "Identifier verification failed. This MAC remains blocked.", mac, serial, gpon)
