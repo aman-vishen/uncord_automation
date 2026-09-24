@@ -1783,14 +1783,14 @@ class ClientApp(tk.Tk):
                     card = self.cards[slot_key]
                     card.set_step("firmware", "…")
                     card.set_step("report", "—")
-                    card.set_state("FW UPDATE", f"FINAL DUT STEP — updating firmware: {firmware.get('file_name', '')}")
+                    card.set_state("FW UPDATE", f"FIRST DUT STEP — updating firmware: {firmware.get('file_name', '')}")
                     card.button.configure(state="disabled", text="FIRMWARE...", bg="#C8CED8")
                 elif kind == "firmware_done":
                     slot_key, firmware = payload
                     card = self.cards[slot_key]
                     card.set_step("firmware", "✓")
-                    card.set_step("report", "…")
-                    card.set_state("PROGRAMMING", "Firmware complete and PCB reboot verified. Reporting PASS to server.")
+                    card.set_step("report", "—")
+                    card.set_state("PROGRAMMING", "Firmware verified. Running factorymode + firstboot before identity reservation.")
                 elif kind == "firmware_skipped":
                     slot_key, = payload
                     card = self.cards[slot_key]
@@ -1872,12 +1872,8 @@ class ClientApp(tk.Tk):
                     card = self.cards[slot_key]
                     card.set_step("write", "✓")
                     card.set_step("verify", "✓" if passed else "✕")
-                    if passed and firmware_enabled:
-                        card.set_step("firmware", "…")
-                        card.set_state("PROGRAMMING", "Identity verified; starting firmware as FINAL DUT STEP", card.mac.get())
-                    else:
-                        card.set_step("report", "…")
-                        card.set_state("PROGRAMMING", "Verification complete; reporting result to central server", card.mac.get())
+                    card.set_step("report", "…")
+                    card.set_state("PROGRAMMING", "Identity verification complete; reporting result to central server", card.mac.get())
                 elif kind == "done":
                     slot_key, mac, serial, gpon, status, report = payload
                     card = self.cards[slot_key]
@@ -1886,7 +1882,7 @@ class ClientApp(tk.Tk):
                         self._set_stats(report["stats"])
                     if status == "PASS":
                         card.set_step("connect", "✓"); card.set_step("reserve", "✓"); card.set_step("write", "✓"); card.set_step("verify", "✓")
-                        card.set_state("PASS", "Cycle complete. If firmware was enabled, it was written last and the PCB reboot was verified. Replace PCB when ready.", mac, serial, gpon)
+                        card.set_state("PASS", "Cycle complete: firmware first, factorymode + firstboot, then identity write/verify. Replace PCB when ready.", mac, serial, gpon)
                     elif status == "FAIL":
                         card.set_step("verify", "✕")
                         card.set_state("FAIL", "Identifier verification failed. This MAC remains blocked.", mac, serial, gpon)
