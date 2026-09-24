@@ -1508,6 +1508,9 @@ class ClientApp(tk.Tk):
 
             firmware = client.firmware_config()
             firmware_enabled = bool(firmware.get("enabled"))
+            require_firmware = _cfg_bool(cfg, "REQUIRE_FIRMWARE_UPGRADE", True)
+            if require_firmware and not firmware_enabled:
+                raise AppError("Firmware-first flow requires Central Server firmware update to be ON. Set REQUIRE_FIRMWARE_UPGRADE=0 only for an intentional bypass.")
             if firmware_enabled and not firmware.get("available"):
                 raise AppError("Firmware update is ON on the central server, but no firmware file is available.")
 
