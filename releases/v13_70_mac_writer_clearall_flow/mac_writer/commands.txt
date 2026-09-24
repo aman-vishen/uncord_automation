@@ -1,9 +1,21 @@
 # ============================================================
 # ETE SOLUTIONS INDIA - MAC WRITER v13.70
-# Exact flow is controlled by app.py/config.txt:
-# Firmware -> firstboot -> clearall -> factorymode -> identity write
-# -> firstboot -> post-reboot verify
 # ============================================================
+# app.py controls the reboot/preparation sequence:
+# Firmware upgrade
+# -> firstboot -y -r
+# -> prolinecmd clearall
+# -> prolinecmd factorymode set 1
+# -> identity write
+# -> firstboot -y -r
+# -> verify identity after reboot
+#
+# Supported placeholders:
+# {MAC} / {MAC_COLON}
+# {MAC_DASH}
+# {MAC_NOSEP}
+# {SERIAL}
+# {GPON}
 
 [WRITE]
 prolinecmd macaddr set {MAC_NOSEP}
@@ -17,3 +29,4 @@ prolinecmd hwsn get
 prolinecmd gponsn get
 
 [FINALIZE]
+# intentionally empty; v13.70 app.py controls both firstboot operations
