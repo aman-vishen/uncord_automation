@@ -10,9 +10,11 @@ async function load(){
     let r=await fetch('/api/dashboard?'+params());
     if(!r.ok)throw new Error('HTTP '+r.status);
     let d=await r.json();state=d;syncModels(d);render(d);
-    $('#healthDot').style.background='#1f9d62';$('#healthText').textContent='MES online'
+    $('#healthDot').style.background='#1f9d62';$('#healthText').textContent='MES online';
+    $('#updatedAt').classList.remove('unavailable');$('#updatedAt').textContent='Updated '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});$('#dashboardNotice').hidden=true
   }catch(e){
-    $('#healthDot').style.background='#d84949';$('#healthText').textContent='MES offline'
+    $('#healthDot').style.background='#d84949';$('#healthText').textContent='Refresh failed';
+    $('#updatedAt').classList.add('unavailable');$('#updatedAt').textContent='Update unavailable';$('#dashboardNotice').hidden=false;$('#dashboardNotice').textContent=e.message==='HTTP 401'?'Your session has expired. Reload the page to sign in.':'Unable to refresh production data. Check your connection and apply filters to retry. Any displayed figures are from the last successful update.'
   }
 }
 function syncModels(d){
@@ -22,7 +24,7 @@ function syncModels(d){
 }
 function render(d){
   const k=d.kpi;
-  const uphSub=k.target_uph?(`Target ${k.target_uph} UPH`):'Set TARGET_UPH to compare';
+  const uphSub=k.target_uph?(`Target ${k.target_uph} UPH`):'Units in latest recorded hour';
   let cards=[
     ['Line Input',k.line_input,'Wi-Fi Calibration tested'],
     ['Finished Output',k.production_volume,'Final Verification tested'],
@@ -35,7 +37,7 @@ function render(d){
   ];
   $('#kpis').innerHTML=cards.map(x=>`<div class="kpi"><div class="label">${x[0]}</div><div class="value">${x[1]}</div><div class="sub">${x[2]}</div></div>`).join('');
   $('#rangeText').textContent=`${d.range.start} to ${d.range.end}`;
-  $('#uphTargetText').textContent=k.target_uph?`Target: ${k.target_uph} UPH`:'TARGET_UPH not configured';
+  $('#uphTargetText').textContent=k.target_uph?`Target: ${k.target_uph} UPH`:'Latest 24 recorded hours';
   renderProcess(d.stages);renderDaily(d.daily);renderYield(k.final_yield,k.final_pass,k.final_fail);
   renderStages(d.stages);renderStations(d.stations);renderRecords(d.recent);
   renderHourly(d.hourly,k.target_uph);renderPareto(d.failure_pareto);renderFunnel(d.funnel);
@@ -85,7 +87,7 @@ function filterRecords(){
   let rows=(state.recent||[]).filter(r=>Object.values(r).join(' ').toLowerCase().includes(q));
   $('#recordsTable').innerHTML=rows.length?rows.map(r=>`<tr><td>${esc(r.completed_at||'-')}</td><td>${esc(r.stage||'-')}</td><td>${esc(r.model||'-')}</td><td>${esc(r.mac||'-')}</td><td>${esc(r.serial_number||'-')}</td><td>${esc(r.gpon_number||'-')}</td><td>${esc(r.pcb_serial_number||'-')}</td><td>${esc(r.client_id||'-')}</td><td>${esc(r.router_ip||'-')}</td><td>${esc(r.firmware_version||r.firmware_result||'-')}</td><td title="${esc(r.source_file||'')}">${esc(shortFile(r.source_file))}</td><td>${badge(r.status)}</td><td class="detail-cell" title="${esc(r.detail||'')}">${esc((r.detail||'-').slice(0,100))}</td></tr>`).join(''):'<tr><td colspan="13" class="muted">No records in this date range.</td></tr>'
 }
-document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('nav button,.view').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#'+b.dataset.view).classList.add('active')}));
+document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('nav button,.view').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#'+b.dataset.view).classList.add('active');$('#pageTitle').textContent=b.dataset.view==='overview'?'Production overview':b.textContent.trim()}));
 $('#apply').addEventListener('click',load);$('#search').addEventListener('input',filterRecords);$('#model').addEventListener('change',load);
 load();setInterval(load,Math.max(5,window.MES_REFRESH||10)*1000);
 
@@ -102,3 +104,9 @@ async function traceSearch(){
   }catch(e){$('#traceTable').innerHTML=`<tr><td colspan="9" class="muted">${esc(e.message)}</td></tr>`}
 }
 $('#traceSearch').addEventListener('click',traceSearch);$('#traceQuery').addEventListener('keydown',e=>{if(e.key==='Enter')traceSearch()});
+
+document.querySelectorAll('[data-days]').forEach(button=>button.addEventListener('click',()=>{
+ const end=new Date(),start=new Date(end);start.setDate(start.getDate()-Number(button.dataset.days)+1);
+ const localDate=d=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
+ $('#start').value=localDate(start);$('#end').value=localDate(end);load();
+}));
