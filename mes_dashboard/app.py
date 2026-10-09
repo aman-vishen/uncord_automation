@@ -291,7 +291,10 @@ def validate_event(raw: Any, postgres: bool) -> dict[str, Any]:
     if event_type != "MAC_POOL_SNAPSHOT" and status not in {"PASS", "FAIL", "ERROR"}:
         raise ValueError("status must be PASS, FAIL, or ERROR")
     stage_name = normalize_text(raw.get("stage_name"), 100).upper()
-    allowed_stages = {"WIFI_CALIBRATION", "LABEL_PRINTING", "BOB_CALIBRATION", "WIFI_COUPLING_VOIP"}
+    allowed_stages = {
+        "WIFI_CALIBRATION", "LABEL_PRINTING", "GIFT_BOX_LABEL", "MASTER_CARTON_LABEL",
+        "BOB_CALIBRATION", "WIFI_COUPLING_VOIP", "BOX_BUILD",
+    }
     if event_type == "STAGE_LOG_RESULT" and stage_name not in allowed_stages:
         raise ValueError("Unsupported or missing stage_name")
     if event_type == "MAC_POOL_SNAPSHOT":
