@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urlparse
+from operations import Operations, PLANT_ZONE
 
 try:
     import psycopg
@@ -557,6 +558,52 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/health":
                 return self.send_json({"ok": True, "service": "ETE Cloud MES", "version": "13.61", "database": db.backend_name, "events": db.count()})
+            if path in {"/api/operations", "/api/records", "/api/event", "/api/passport", "/export/records.csv"}:
+                if not self.require_dashboard():
+                    return
+                if path == "/api/operations":
+                    return self.send_json(operations.summary(query, TARGET_UPH))
+                if path == "/api/records":
+                    return self.send_json(operations.records(query))
+                if path == "/api/event":
+                    result = operations.event(query.get("id", [""])[0])
+                    return self.send_json(result, 200 if result["found"] else 404)
+                if path == "/api/passport":
+                    return self.send_json(operations.passport(query.get("q", [""])[0], query.get("plant", [""])[0], query.get("mac", [""])[0]))
+                # Stream a complete export with exactly the record search filters.
+                where, args = operations.filters(query, True)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", 'attachment; filename="production_records.csv"')
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                fields = ["completed_at", "received_at", "plant_id", "model", "stage_label", "station_id", "mac", "serial_number", "gpon_number", "pcb_serial_number", "status", "detail", "event_id", "source_file"]
+                output = io.StringIO()
+                writer = csv.DictWriter(output, fieldnames=fields)
+                writer.writeheader()
+                self.wfile.write(output.getvalue().encode("utf-8-sig"))
+                with db.connect() as con:
+                    cur = con.cursor()
+                    sql = operations.base + f"SELECT * FROM events WHERE {where} ORDER BY stamp DESC,event_id DESC"
+                    cur.execute(sql.replace("?", "%s") if db.postgres else sql, args)
+                    while True:
+                        rows = cur.fetchmany(500)
+                        if not rows:
+                            break
+                        output.seek(0); output.truncate(0)
+                        for raw in rows:
+                            record = operations.public(dict(raw))
+                            values = {key: record.get(key, "") for key in fields}
+                            # CSV cells remain text when opened in a spreadsheet.
+                            for key, value in values.items():
+                                if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+                                    values[key] = "'" + value
+                            writer.writerow(values)
+                        self.wfile.write(output.getvalue().encode("utf-8"))
+                return
             if path == "/api/traceability":
                 if not self.require_dashboard():
                     return
@@ -591,7 +638,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/":
                 if not self.require_dashboard():
                     return
-                file = BASE_DIR / "templates" / "index.html"
+                file = BASE_DIR / "templates" / "operations.html"
             elif path.startswith("/static/"):
                 file = BASE_DIR / path.lstrip("/")
             elif path.startswith("/assets/"):
@@ -602,12 +649,14 @@ class Handler(BaseHTTPRequestHandler):
             if not file.exists() or BASE_DIR not in resolved.parents:
                 return self.send_json({"ok": False, "error": "Not found"}, 404)
             data = file.read_bytes()
-            if file.name == "index.html":
-                today = date.today()
+            if file.name in {"index.html", "operations.html"}:
+                today = datetime.now(PLANT_ZONE).date()
                 data = data.replace(b"{{ refresh_seconds }}", str(REFRESH_SECONDS).encode())
                 data = data.replace(b"{{ start }}", (today - timedelta(days=6)).isoformat().encode())
                 data = data.replace(b"{{ end }}", today.isoformat().encode())
             return self.send_bytes(data, mimetypes.guess_type(file.name)[0] or "application/octet-stream")
+        except ValueError as exc:
+            return self.send_json({"ok": False, "error": str(exc)}, 400)
         except Exception as exc:
             return self.send_json({"ok": False, "error": str(exc)}, 500)
 
@@ -630,6 +679,8 @@ class Handler(BaseHTTPRequestHandler):
             if len(events) > MAX_BATCH_SIZE:
                 return self.send_json({"ok": False, "error": f"Batch exceeds MAX_BATCH_SIZE={MAX_BATCH_SIZE}"}, 413)
             accepted, duplicates, rejected = db.insert_events(events)
+            if accepted:
+                operations.invalidate()
             processed = accepted + duplicates
             return self.send_json({"ok": True, "accepted": len(accepted), "duplicates": len(duplicates), "rejected": rejected, "processed_event_ids": processed}, 200 if not rejected else 207)
         except (ValueError, json.JSONDecodeError) as exc:
@@ -642,6 +693,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 db = CloudDatabase()
+operations = Operations(db)
 
 if __name__ == "__main__":
     print(f"ETE Cloud MES v13.61: http://{HOST}:{PORT}")
