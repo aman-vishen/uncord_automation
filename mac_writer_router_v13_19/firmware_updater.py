@@ -88,6 +88,54 @@ def _run_command(client, command: str, timeout: float = 60):
     return exit_code, out, err
 
 
+def _upload_firmware_ssh_stream(client, local_firmware: Path, remote_firmware: str, log=None) -> None:
+    """Fallback for OpenWrt/Dropbear builds without an SFTP subsystem."""
+    transport = client.get_transport()
+    if transport is None or not transport.is_active():
+        raise FirmwareUpdateError("SSH transport is not active for stream-upload fallback")
+
+    _emit(log, f"Falling back to SSH stream upload: cat > {remote_firmware}")
+    channel = transport.open_session()
+    try:
+        channel.settimeout(60)
+        channel.exec_command(f"cat > {remote_firmware}")
+        sent = 0
+        with local_firmware.open("rb") as fw:
+            while True:
+                chunk = fw.read(256 * 1024)
+                if not chunk:
+                    break
+                channel.sendall(chunk)
+                sent += len(chunk)
+        channel.shutdown_write()
+        exit_code = channel.recv_exit_status()
+        if exit_code != 0:
+            raise FirmwareUpdateError(f"SSH stream upload failed with exit code {exit_code}")
+        _emit(log, f"SSH stream upload completed: {sent:,} bytes sent")
+    finally:
+        try:
+            channel.close()
+        except Exception:
+            pass
+
+
+def _upload_firmware(client, local_firmware: Path, remote_firmware: str, log=None) -> str:
+    """Try SFTP first, then fall back to raw SSH streaming if SFTP is unavailable."""
+    _emit(log, f"Uploading firmware by SFTP to {remote_firmware} ...")
+    try:
+        sftp = client.open_sftp()
+        try:
+            sftp.put(str(local_firmware), remote_firmware)
+        finally:
+            sftp.close()
+        _emit(log, "SFTP firmware upload completed.")
+        return "SFTP"
+    except Exception as exc:
+        _emit(log, f"SFTP unavailable ({exc}). Using SSH stream upload fallback.")
+        _upload_firmware_ssh_stream(client, local_firmware, remote_firmware, log)
+        return "SSH_STREAM"
+
+
 def _tcp_ssh_up(router_ip: str, source_ip: str, port: int) -> bool:
     try:
         sock = _bound_tcp_socket(router_ip, source_ip, port, 1.5)
@@ -166,12 +214,7 @@ def upgrade_router_firmware(*, router_ip: str, source_ip: str, firmware_path: Pa
         if code == 0 and out:
             _emit(log, f"/tmp space: {out}")
 
-        _emit(log, f"Uploading firmware by SFTP to {remote_firmware} ...")
-        sftp = client.open_sftp()
-        try:
-            sftp.put(str(local_firmware), remote_firmware)
-        finally:
-            sftp.close()
+        upload_method = _upload_firmware(client, local_firmware, remote_firmware, log)
 
         local_size = local_firmware.stat().st_size
         code, out, err = _run_command(client, f"wc -c < {remote_firmware}", timeout=20)
@@ -183,7 +226,7 @@ def upgrade_router_firmware(*, router_ip: str, source_ip: str, firmware_path: Pa
             raise FirmwareUpdateError(f"Invalid remote size response: {out!r}") from exc
         if remote_size != local_size:
             raise FirmwareUpdateError(f"Upload size mismatch. Local={local_size}, remote={remote_size}")
-        _emit(log, f"Upload verified: {remote_size:,} bytes")
+        _emit(log, f"Upload verified: {remote_size:,} bytes ({upload_method})")
 
         _emit(log, "Validating firmware image with sysupgrade -T ...")
         code, out, err = _run_command(client, f"sysupgrade -T {remote_firmware}", timeout=validate_timeout)
@@ -240,4 +283,4 @@ def upgrade_router_firmware(*, router_ip: str, source_ip: str, firmware_path: Pa
             )
 
     _emit(log, "FIRMWARE UPDATE: PASS")
-    return {"before": before, "after": after, "uptime": out, "firmware_file": local_firmware.name}
+    return {"before": before, "after": after, "uptime": out, "firmware_file": local_firmware.name, "upload_method": upload_method}
