@@ -764,6 +764,9 @@ async def router_wan_config_session(router: RouterTarget, cfg: dict[str, str], e
     """
     Final router-only provisioning step.
 
+    WAN is WRITE-ONLY in this router build: apply/commit the configuration,
+    reload networking, bring WANv4_1 up, and do not read back or verify values.
+
     SAFETY RULE: no firstboot, clearall, factory reset or other destructive reset
     command is executed in this function or after it in the production cycle.
     """
@@ -773,7 +776,7 @@ async def router_wan_config_session(router: RouterTarget, cfg: dict[str, str], e
     connect_timeout = float(cfg.get("ROUTER_WAN_TELNET_TIMEOUT_SECONDS", "240"))
     poll_seconds = float(cfg.get("ROUTER_WAN_TELNET_POLL_SECONDS", "2"))
 
-    emit("--- ROUTER WAN FINAL CONFIGURATION ---")
+    emit("--- ROUTER WAN FINAL CONFIGURATION (WRITE ONLY) ---")
     emit("SAFETY: WAN provisioning is the final DUT step. No firstboot/reset will run after this point.")
 
     reader = writer = None
@@ -790,27 +793,12 @@ async def router_wan_config_session(router: RouterTarget, cfg: dict[str, str], e
             except Exception:
                 pass
 
-    # Reconnect after network reload, bring the interface up, and verify the committed values.
+    # Reconnect only to execute the requested final ifup command.
+    # No uci get / ifstatus / WAN verification is performed.
     reader = writer = None
-    checks: dict[str, bool] = {}
     try:
         reader, writer = await _router_wan_open_telnet(router, emit, connect_timeout, poll_seconds)
         await _router_wan_send(reader, writer, router, "ifup WANv4_1", emit)
-        await asyncio.sleep(1.0)
-
-        for label, command, expected in ROUTER_WAN_VERIFY_COMMANDS:
-            response = await _router_wan_send(reader, writer, router, command, emit)
-            # The command itself does not contain the expected value, so a direct
-            # expected-value check is reliable even when Telnet echoes commands.
-            passed = expected.lower() in response.lower()
-            checks[label] = passed
-            emit(f"VERIFY WAN {label}: {'PASS' if passed else 'FAIL'}")
-
-        status_response = await _router_wan_send(reader, writer, router, "ifstatus WANv4_1", emit)
-        compact_status = re.sub(r"\s+", "", status_response).lower()
-        interface_up = '"up":true' in compact_status
-        checks["IFSTATUS_UP"] = interface_up
-        emit(f"VERIFY WAN IFSTATUS_UP: {'PASS' if interface_up else 'FAIL'}")
     finally:
         if writer is not None:
             try:
@@ -820,11 +808,8 @@ async def router_wan_config_session(router: RouterTarget, cfg: dict[str, str], e
             except Exception:
                 pass
 
-    failed = [name for name, ok in checks.items() if not ok]
-    if failed:
-        raise AppError("Router WAN verification failed: " + ", ".join(failed))
-    emit("ROUTER WAN RESULT: PASS - static WAN configuration committed and verified.")
-    return checks
+    emit("ROUTER WAN WRITE: DONE - configuration committed; verification intentionally skipped.")
+    return {"WRITE": True}
 
 
 
@@ -1684,10 +1669,10 @@ class ClientApp(tk.Tk):
 
                 # FINAL DUT STEP FOR ROUTER VERSION.
                 # This function applies/commits the static WAN profile, reloads networking,
-                # reconnects and verifies it. Nothing destructive is executed afterward.
+                # runs ifup WANv4_1, and intentionally performs no WAN verification.
                 wan_checks = asyncio.run(router_wan_config_session(router, cfg, emit))
                 checks.update({f"WAN_{name}": ok for name, ok in wan_checks.items()})
-                detail += " | Router WAN: 20.20.20.20/24 gateway 20.20.20.1 applied and verified"
+                detail += " | Router WAN: 20.20.20.20/24 gateway 20.20.20.1 written; verification skipped"
                 status = "PASS"
 
             # Server reporting below is bookkeeping only. No DUT command is executed
