@@ -1,0 +1,36 @@
+name: Package Router MAC Writer v13.19
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'mac_writer_router_v13_19/**'
+      - '.github/workflows/package_router_mac_writer_v13_19.yml'
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build full package
+        run: |
+          set -eux
+          mkdir -p dist/ETE_MAC_Writer_Router_v13_19_FULL/assets
+          cp mac_writer_router_v13_19/app.py dist/ETE_MAC_Writer_Router_v13_19_FULL/
+          cp mac_writer_router_v13_19/config.txt dist/ETE_MAC_Writer_Router_v13_19_FULL/
+          cp mac_writer_router_v13_19/commands.txt dist/ETE_MAC_Writer_Router_v13_19_FULL/
+          cp mac_writer_router_v13_19/firmware_updater.py dist/ETE_MAC_Writer_Router_v13_19_FULL/
+          cp mac_writer_router_v13_19/requirements.txt dist/ETE_MAC_Writer_Router_v13_19_FULL/
+          cp mac_writer_router_v13_19/run_client.bat dist/ETE_MAC_Writer_Router_v13_19_FULL/
+          cp mac_writer_router_v13_19/README.md dist/ETE_MAC_Writer_Router_v13_19_FULL/
+          cp mac_writer/assets/ete_logo.png dist/ETE_MAC_Writer_Router_v13_19_FULL/assets/
+          cp mac_writer/assets/ete_logo_original.png dist/ETE_MAC_Writer_Router_v13_19_FULL/assets/
+          python -m py_compile dist/ETE_MAC_Writer_Router_v13_19_FULL/app.py dist/ETE_MAC_Writer_Router_v13_19_FULL/firmware_updater.py
+          cd dist
+          zip -r ETE_MAC_Writer_Router_v13_19_FULL.zip ETE_MAC_Writer_Router_v13_19_FULL
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ETE_MAC_Writer_Router_v13_19_FULL
+          path: dist/ETE_MAC_Writer_Router_v13_19_FULL.zip
+          if-no-files-found: error
