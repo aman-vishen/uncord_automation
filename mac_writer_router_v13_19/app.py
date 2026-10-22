@@ -542,22 +542,22 @@ def run_direct_firmware_update(router: RouterTarget, firmware_path: Path, cfg: d
         raise AppError(str(exc)) from exc
 
 
-def wait_for_router_after_firmware(router: RouterTarget, initial_delay: float, timeout: float, poll_seconds: float, emit) -> None:
-    """After SSH confirms the upgrade, wait until the normal Telnet production service returns."""
+def wait_for_router_telnet(router: RouterTarget, reason: str, initial_delay: float, timeout: float, poll_seconds: float, emit) -> None:
+    """Wait until the normal production Telnet service returns after a reboot/reset."""
     if initial_delay > 0:
-        emit(f"Waiting {initial_delay:g}s for production Telnet service ...")
+        emit(f"Waiting {initial_delay:g}s for router reboot after {reason} ...")
         time.sleep(initial_delay)
     deadline = time.monotonic() + max(1.0, timeout)
     last_error = ""
     while time.monotonic() < deadline:
         try:
             check_router_reachable(router)
-            emit("Router Telnet service is reachable after firmware update.")
+            emit(f"Router Telnet service is reachable after {reason}.")
             return
         except Exception as exc:
             last_error = str(exc)
             time.sleep(max(0.2, poll_seconds))
-    raise AppError(f"Router Telnet service did not return after firmware update within {timeout:g}s. Last check: {last_error}")
+    raise AppError(f"Router Telnet service did not return after {reason} within {timeout:g}s. Last check: {last_error}")
 
 
 async def telnet_session(router: RouterTarget, mac: str, serial: str, gpon: str, seq: int,
@@ -1633,11 +1633,11 @@ class ClientApp(tk.Tk):
             self.events.put(("allocated", (router.key, alloc)))
             self.events.put(("telnet_start", (router.key,)))
 
-            # When firmware is ON, do not run [FINALIZE] here. sysupgrade is the
-            # last board operation and performs the reboot itself.
-            effective_finalize_cmds = [] if firmware_enabled else finalize_cmds
+            # Router sequence is fixed:
+            # identity write/verify -> firstboot -> wait for Telnet -> optional firmware -> WAN write LAST.
+            # FIRSTBOOT MUST ALWAYS RUN after MAC/Serial/GPON/SSID programming, even when firmware is enabled.
             passed, checks = asyncio.run(
-                telnet_session(router, mac, serial, gpon, seq, write_cmds, verify_cmds, effective_finalize_cmds, emit)
+                telnet_session(router, mac, serial, gpon, seq, write_cmds, verify_cmds, finalize_cmds, emit)
             )
             self.events.put(("verify_result", (router.key, passed, checks, firmware_enabled)))
 
@@ -1645,13 +1645,23 @@ class ClientApp(tk.Tk):
                 status = "FAIL"
                 detail = f"Identifier verification failed: {checks} | Firmware: not run because identifier verification failed"
             else:
-                # Firmware/reboot work must finish BEFORE the final router WAN step.
-                # The supplied updater uploads over SFTP, validates with sysupgrade -T,
-                # runs sysupgrade, waits for the automatic reboot, reconnects over SSH
-                # and performs its health check.
+                # [FINALIZE] contains firstboot -y -r. Wait for the router to return
+                # before starting firmware or final WAN provisioning.
+                wait_for_router_telnet(
+                    router,
+                    "firstboot",
+                    initial_delay=float(cfg.get("FIRSTBOOT_INITIAL_WAIT_SECONDS", "8")),
+                    timeout=float(cfg.get("ROUTER_WAN_TELNET_TIMEOUT_SECONDS", "240")),
+                    poll_seconds=float(cfg.get("ROUTER_WAN_TELNET_POLL_SECONDS", "2")),
+                    emit=emit,
+                )
+                checks["FIRSTBOOT"] = True
+
+                # Firmware, when enabled, runs AFTER firstboot and BEFORE WAN.
+                # WAN remains the absolute final DUT configuration step.
                 if firmware_enabled:
                     self.events.put(("firmware_start", (router.key, firmware)))
-                    emit(f"Starting LAST DUT STEP — firmware update: {firmware.get('file_name')} ({firmware.get('size', 0)} bytes)")
+                    emit(f"Starting firmware update after firstboot: {firmware.get('file_name')} ({firmware.get('size', 0)} bytes)")
                     local_fw = client.download_firmware(firmware)
                     emit(f"Firmware downloaded from server and SHA-256 verified: {local_fw.name}")
                     emit(f"Using direct SSH/SFTP updater via dedicated PC NIC {router.source_ip}.")
@@ -1663,9 +1673,9 @@ class ClientApp(tk.Tk):
                     firmware_name = str(firmware.get("file_name") or "")
                     checks["FIRMWARE"] = True
                     self.events.put(("firmware_done", (router.key, firmware)))
-                    detail = f"MAC, serial and GPON verified successfully | Firmware: {firmware_name} applied before router WAN provisioning"
+                    detail = f"MAC, serial, GPON and SSID verified | firstboot completed | Firmware: {firmware_name} applied before router WAN provisioning"
                 else:
-                    detail = "MAC, serial and GPON verified successfully | Firmware: skipped (server OFF); FINALIZE firstboot completed before router WAN provisioning"
+                    detail = "MAC, serial, GPON and SSID verified | firstboot completed | Firmware: skipped (server OFF)"
 
                 # FINAL DUT STEP FOR ROUTER VERSION.
                 # This function applies/commits the static WAN profile, reloads networking,
@@ -1782,24 +1792,39 @@ class ClientApp(tk.Tk):
             if firmware_enabled and not firmware.get("available"):
                 raise AppError("Firmware update is ON on the central server, but no firmware file is available.")
 
-            effective_finalize_cmds = [] if firmware_enabled else finalize_cmds
             passed, checks = asyncio.run(
-                telnet_session(router, mac, serial, gpon, seq, write_cmds, verify_cmds, effective_finalize_cmds, emit)
+                telnet_session(router, mac, serial, gpon, seq, write_cmds, verify_cmds, finalize_cmds, emit)
             )
             self.events.put(("verify_result", (router.key, passed, checks, firmware_enabled)))
+
+            if passed:
+                wait_for_router_telnet(
+                    router,
+                    "firstboot",
+                    initial_delay=float(cfg.get("FIRSTBOOT_INITIAL_WAIT_SECONDS", "8")),
+                    timeout=float(cfg.get("ROUTER_WAN_TELNET_TIMEOUT_SECONDS", "240")),
+                    poll_seconds=float(cfg.get("ROUTER_WAN_TELNET_POLL_SECONDS", "2")),
+                    emit=emit,
+                )
+                checks["FIRSTBOOT"] = True
 
             if passed and firmware_enabled:
                 self.events.put(("firmware_start", (router.key, firmware)))
                 local_fw = client.download_firmware(firmware)
-                emit(f"Recovery cycle: firmware is the FINAL DUT STEP: {local_fw.name}")
+                emit(f"Recovery cycle: firmware update after firstboot: {local_fw.name}")
                 run_direct_firmware_update(router, local_fw, cfg, emit)
                 checks["FIRMWARE"] = True
                 self.events.put(("firmware_done", (router.key, firmware)))
-                detail = f"Recovered interrupted cycle | Firmware: {firmware.get('file_name', '')} applied as final DUT step"
+                detail = f"Recovered interrupted cycle | firstboot completed | Firmware: {firmware.get('file_name', '')} applied"
             elif passed:
-                detail = "Recovered interrupted cycle | Firmware skipped (server OFF); normal FINALIZE command used"
+                detail = "Recovered interrupted cycle | firstboot completed | Firmware skipped (server OFF)"
             else:
                 detail = f"Recovered interrupted cycle | Identifier verification failed: {checks}"
+
+            if passed:
+                wan_checks = asyncio.run(router_wan_config_session(router, cfg, emit))
+                checks.update({f"WAN_{name}": ok for name, ok in wan_checks.items()})
+                detail += " | Router WAN written; verification skipped"
 
             status = "PASS" if passed else "FAIL"
             report = client.report(router, reservation_id, status, detail, serial, gpon)
