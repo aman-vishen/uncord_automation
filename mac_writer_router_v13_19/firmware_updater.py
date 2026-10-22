@@ -46,8 +46,11 @@ def _ssh_connect(router_ip: str, source_ip: str, port: int, username: str, passw
         raise FirmwareUpdateError("Missing dependency 'paramiko'. Run: pip install -r mac_writer/requirements.txt")
     sock = None
     client = paramiko.SSHClient()
-    client.load_system_host_keys()
-    # Same behavior as the supplied script for a controlled production LAN.
+    # All production DUTs share the same management IP (192.168.2.1) but are
+    # reached through separate dedicated PC NICs. Different physical boards may
+    # therefore present different SSH host keys at the same IP. Do not load the
+    # PC's global known_hosts cache here, otherwise a key saved for a previous
+    # DUT will cause a host-key mismatch before AutoAddPolicy can accept this DUT.
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         sock = _bound_tcp_socket(router_ip, source_ip, port, timeout)
