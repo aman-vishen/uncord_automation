@@ -28,12 +28,14 @@
 prolinecmd macaddr set {MAC_NOSEP}
 prolinecmd hwsn set {SERIAL}
 prolinecmd gponsn set {GPON}
+prolinecmd ssid set UNCORD
 prolinecmd telnetEnable set 1
 
 [VERIFY]
 prolinecmd macaddr get
 prolinecmd hwsn get
 prolinecmd gponsn get
+prolinecmd ssid get
 
 [FINALIZE]
 firstboot -y -r
