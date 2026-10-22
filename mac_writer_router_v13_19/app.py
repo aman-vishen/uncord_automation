@@ -638,6 +638,13 @@ async def telnet_session(router: RouterTarget, mac: str, serial: str, gpon: str,
             "SERIAL": serial.upper() in output.upper(),
             "GPON": gpon.upper() in output.upper(),
         }
+
+        ssid_matches = re.findall(r"(?im)^\s*Value\s*=\s*<?(.+?)>?\s*$", output)
+        if ssid_matches:
+            ssid_value = ssid_matches[-1].strip().strip("<>").strip()
+            checks["SSID"] = ssid_value.upper() == "UNCORD"
+        else:
+            checks["SSID"] = False
         for label, passed in checks.items():
             emit(f"VERIFY {label}: {'PASS' if passed else 'FAIL'}")
         passed = all(checks.values())
